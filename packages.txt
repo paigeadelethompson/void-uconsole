@@ -5,3 +5,5 @@ zsh
 bash
 ssh
 git
+curl
+openssl-sys
