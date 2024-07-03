@@ -9,3 +9,4 @@ curl
 openssl-sys
 wget
 base-devel
+cmake
