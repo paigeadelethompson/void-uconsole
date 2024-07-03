@@ -32,9 +32,9 @@ ADD fstab /etc/fstab
 
 ADD issue.net /etc/issue.net
 
-RUN git clone https://github.com/cuu/skel.git /home/pi
+ADD skel /home/pi
 
-RUN git clone https://github.com/cuu/skel.git /etc/skel
+ADD shel /etc/skel
 
 RUN mkdir -p /home/pi
 
@@ -42,7 +42,7 @@ RUN mkdir -p /home/pi/.ssh
 
 RUN rm -rf /home/pi/.git
 
-RUN git clone https://github.com/clockworkpi/uConsole.git /home/pi/uConsole
+ADD uConsole /home/pi/uConsole
 
 RUN groupadd spi
 
@@ -72,7 +72,7 @@ ADD config.txt /boot/config.txt
 
 RUN cd /tmp
 
-RUN git clone https://github.com/raspberrypi/userland /usr/src/userland
+ADD userland /usr/src/userland
 
 RUN cd /usr/src/userland ; ./buildme --aarch64
 
