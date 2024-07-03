@@ -16,3 +16,4 @@ ncurses-devel
 gawk
 dkms
 bc
+binutils
