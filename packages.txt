@@ -6,4 +6,3 @@ bash
 ssh
 git
 curl
-wget
