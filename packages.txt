@@ -8,3 +8,4 @@ git
 curl
 openssl-sys
 wget
+base-devel
