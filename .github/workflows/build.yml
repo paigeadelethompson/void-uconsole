@@ -21,6 +21,8 @@ jobs:
     - name: clone external repos
       run: git clone https://github.com/raspberrypi/userland && git clone https://github.com/clockworkpi/uConsole.git && git clone https://github.com/cuu/skel.git 
 # && git clone https://github.com/raspberrypi/linux.git
+    - name: Setup CCache
+      uses: hendrikmuhs/ccache-action@v1.2
     - name: Patch kernel
       run: cd linux && git apply ../uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch && cd ..
     - name: Cross-compile kernel 
@@ -51,7 +53,7 @@ jobs:
       run: curl https://repo-default.voidlinux.org/live/current/void-aarch64-musl-ROOTFS-20240314.tar.xz | xzcat | docker import - voidlinux/voidlinux:latest
     - name: Docker builder
       run: docker create --name void-builder voidlinux/voidlinux:latest /bin/bash
-    - name: Add QEMU static
+    - name: Add QEMU BINFMT shim
       run: docker cp /usr/bin/qemu-aarch64-static void-builder:/usr/bin/qemu-aarch64-static
     - name: Commit builder
       run: docker commit void-builder voidlinux/voidlinux:latest
@@ -61,6 +63,8 @@ jobs:
       run: docker create --name rpi-image void:latest
     - name: Docker export
       run: cd /mnt ; sudo docker export rpi-image | sudo tar --exclude=etc/machine-id --exclude=etc/ssh/*_key* --exclude=etc/ssh/moduli -xf -
+    - name: Delete QEMU BINFMT shim
+      run: rm -rf /mnt/usr/bin/qemu-aarch64-static
     - name: Home directories
       run: sudo mkdir -p /mnt/home/pi/.ssh
     - name: authorized_keys empty file
