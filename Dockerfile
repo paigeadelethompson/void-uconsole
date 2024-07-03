@@ -82,7 +82,7 @@ ADD linux /usr/src/linux
 
 WORKDIR /usr/src/linux
 
-RUN git reset --hard 3a33f11c48572b9dd0fecac164b3990fc9234da8 && git apply /home/pi/uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch 
+#RUN git reset --hard 3a33f11c48572b9dd0fecac164b3990fc9234da8 && git apply /home/pi/uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch 
 
 RUN make bcm2711_defconfig
 
