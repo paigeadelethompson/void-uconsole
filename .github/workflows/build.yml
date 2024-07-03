@@ -43,7 +43,7 @@ jobs:
     - name: Docker builder
       run: docker create --name void-builder voidlinux/voidlinux:latest
     - name: Add QEMU static
-      run: docker cp /usr/bin/qemu-aarch64-static debian-builder:/usr/bin/qemu-aarch64-static
+      run: docker cp /usr/bin/qemu-aarch64-static void-builder:/usr/bin/qemu-aarch64-static
     - name: Commit builder
       run: docker commit void-builder voidlinux/voidlinux:latest
     - name: Docker build
