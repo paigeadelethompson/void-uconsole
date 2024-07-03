@@ -19,7 +19,7 @@ jobs:
     - name: Install tools
       run: sudo apt update ; sudo apt -y install python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
     - name: clone external repos
-      run: git clone https://github.com/raspberrypi/userland && git clone https://github.com/clockworkpi/uConsole.git && git clone https://github.com/cuu/skel.git
+      run: git clone https://github.com/raspberrypi/userland && git clone https://github.com/clockworkpi/uConsole.git && git clone https://github.com/cuu/skel.git && git clone https://github.com/raspberrypi/linux.git
     - name: Create installer.bin
       run: truncate -s 32768M installer.bin
     - name: Create loopback device
