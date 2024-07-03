@@ -1,4 +1,4 @@
-name: "Build Surveillance System OS"
+name: "Void Linux for uConsole"
 
 on:
   workflow_dispatch:
