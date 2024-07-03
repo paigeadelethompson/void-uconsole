@@ -5,4 +5,3 @@ zsh
 bash
 ssh
 git
-curl
