@@ -60,8 +60,6 @@ RUN useradd -u 4000 -g pi -s /bin/bash -d /home/pi -G video,adm,dialout,cdrom,au
 
 RUN chown pi:pi /home/pi
 
-ADD profile /home/pi/.profile
-
 RUN cd /usr/local/bin && wget https://raw.githubusercontent.com/raspberrypi/rpi-update/master/rpi-update
 
 RUN mkdir -p /lib/modules
@@ -80,10 +78,46 @@ ADD userland /usr/src/userland
 
 RUN cd /usr/src/userland ; ./buildme --aarch64
 
+RUN add linux /usr/src/linux
+
+WORKDIR /usr/src/linux
+
+RUN git reset --hard 3a33f11c48572b9dd0fecac164b3990fc9234da8 && git apply /home/pi/uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch 
+
+RUN make bcm2711_defconfig
+
+RUN make -j4
+
+RUN mkdir -p ./modules && rm -rf ./modules/*
+
+RUN INSTALL_MOD_PATH=./modules make modules_install
+
+RUN rm ./modules/lib/modules/*/build
+
+RUN rm ./modules/lib/modules/*/source
+
+RUN mkdir -p ../modules
+
+RUN rm -rf ../modules/*
+
+RUN cp -rav ./modules/* ../modules
+
+RUN mkdir -p ../out
+
+RUN rm -rf ../out/*
+
+RUN mkdir -p ../out/overlays
+
+RUN sudo cp arch/arm64/boot/Image ../out/kernel8.img
+
+RUN sudo cp arch/arm64/boot/dts/broadcom/*.dtb ../out
+
+RUN sudo cp arch/arm64/boot/dts/overlays/*.dtb* ../out/overlays/
+
+RUN sudo cp arch/arm64/boot/dts/overlays/README ../out/overlays/
+
 RUN usermod -U pi
 
 RUN passwd -d pi
 
 ADD 99-uconsole.rules /etc/udev/rules.d/99-uconsole.rules
-
-RUN rm -rf /home
