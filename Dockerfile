@@ -92,11 +92,9 @@ RUN git apply /home/pi/uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch
 
 RUN make V=1 bcm2711_defconfig
 
-RUN make V=1 -j4
+RUN make V=1 -j2
 
-RUN make V=1 modules_install
-
-RUN INSTALL_MOD_PATH=./modules make V=1 modules_install
+RUN make V=1 -j2 modules_install
 
 RUN cp arch/arm64/boot/Image ../boot/kernel8.img
 
