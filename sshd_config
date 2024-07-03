@@ -9,4 +9,4 @@ PasswordAuthentication       no
 PermitEmptyPasswords         no
 Banner                       /etc/issue.net
 AcceptEnv                    LANG LC_*
-AuthorizedKeysFile           ssh/authorized_keys ssh/authorized_keys2
+AuthorizedKeysFile           .ssh/authorized_keys .ssh/authorized_keys2
