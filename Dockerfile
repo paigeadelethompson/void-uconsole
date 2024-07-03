@@ -22,6 +22,8 @@ RUN xbps-install -S -u -y xbps
 
 RUN cat /tmp/packages.txt | xargs -i xbps-install -y -S -R "${REPO}" {} || true
 
+RUN xbps-install -Su -y
+
 ADD startup.txt /tmp/startup.txt
 
 ADD sshd_config /etc/ssh/sshd_config.d/sshd_config
