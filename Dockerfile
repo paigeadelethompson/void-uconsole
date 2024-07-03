@@ -18,9 +18,9 @@ ENV TIMEZONE=UTC
 
 ADD packages.txt /tmp/packages.txt
 
-RUN xbps-install -S -u xbps
+RUN xbps-install -S -u -y xbps
 
-RUN cat /tmp/packages.txt | xargs -i xbps-install -S -R "${REPO}" {}
+RUN cat /tmp/packages.txt | xargs -y -i xbps-install -S -R "${REPO}" {}
 
 ADD startup.txt /tmp/startup.txt
 
