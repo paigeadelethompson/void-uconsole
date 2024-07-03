@@ -18,8 +18,6 @@ ADD packages.txt /tmp/packages.txt
 
 RUN cat packages.txt | xargs -i xbps-install -S -R "${REPO}" {}
 
-RUN xbps-remove base-container-full
-
 ADD startup.txt /tmp/startup.txt
 
 ADD sshd_config /etc/ssh/sshd_config.d/sshd_config
