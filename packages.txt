@@ -10,3 +10,9 @@ openssl-sys
 wget
 base-devel
 cmake
+flex
+bison
+ncurses-devel
+gawk
+dkms
+bc
