@@ -84,8 +84,6 @@ RUN usermod -U pi
 
 RUN passwd -d pi
 
-RUN echo '/opt/vc/lib' > /etc/ld.so.conf.d/00-vmcs.conf
-
 ADD 99-uconsole.rules /etc/udev/rules.d/99-uconsole.rules
 
 RUN rm -rf /home
