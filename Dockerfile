@@ -88,7 +88,7 @@ WORKDIR /usr/src/linux
 
 RUN make ARCH=arm64 V=1 -j2 modules_install
 
-RUN cp arch/arm64/boot/Image ../boot/kernel8.img
+RUN cp arch/arm64/boot/Image /boot/kernel8.img
 
 RUN cp arch/arm/boot/dts/*.dtb /boot/firmware/
 
@@ -97,8 +97,6 @@ RUN cp arch/arm/boot/dts/broadcom/*.dtb /boot/firmware/
 RUN cp arch/arm/boot/dts/overlays/*.dtb* /boot/firmware/overlays/
 
 RUN cp arch/arm/boot/dts/overlays/README /boot/firmware/overlays/
-
-# ENV ARCH=aarch64
 
 RUN usermod -U pi
 
