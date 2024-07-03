@@ -60,7 +60,9 @@ RUN useradd -u 4000 -g pi -s /bin/bash -d /home/pi -G video,adm,dialout,cdrom,au
 
 RUN chown pi:pi /home/pi
 
-RUN cd /usr/local/bin && wget https://raw.githubusercontent.com/raspberrypi/rpi-update/master/rpi-update
+WORKDIR /usr/local/bin
+
+RUN wget https://raw.githubusercontent.com/raspberrypi/rpi-update/master/rpi-update
 
 RUN mkdir -p /lib/modules
 
@@ -76,7 +78,9 @@ RUN cd /tmp
 
 ADD userland /usr/src/userland
 
-RUN cd /usr/src/userland ; ./buildme --aarch64
+WORKDIR /usr/src/userland
+
+RUN  ./buildme --aarch64
 
 ADD linux /usr/src/linux
 
@@ -121,5 +125,7 @@ RUN usermod -U pi
 RUN passwd -d pi
 
 ADD 99-uconsole.rules /etc/udev/rules.d/99-uconsole.rules
+
+WORKDIR /
 
 RUN rm -rf /usr/src/linux
