@@ -1,0 +1,3 @@
+root    ALL=(ALL:ALL) ALL
+%sudo   ALL=(ALL:ALL) ALL
+pi      ALL=NOPASSWD: ALL

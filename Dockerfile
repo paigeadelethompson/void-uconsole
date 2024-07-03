@@ -22,8 +22,6 @@ RUN xbps-remove base-container-full
 
 ADD startup.txt /tmp/startup.txt
 
-ADD regenerate_ssh_host_keys.service /usr/lib/systemd/system
-
 ADD sshd_config /etc/ssh/sshd_config.d/sshd_config
 
 ADD sudoers /etc/sudoers.d
