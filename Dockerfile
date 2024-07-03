@@ -78,7 +78,7 @@ ADD userland /usr/src/userland
 
 RUN cd /usr/src/userland ; ./buildme --aarch64
 
-RUN add linux /usr/src/linux
+ADD linux /usr/src/linux
 
 WORKDIR /usr/src/linux
 
