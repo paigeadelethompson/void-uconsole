@@ -41,7 +41,7 @@ jobs:
     - name: Mount BOOT filesystem
       run: sudo mkdir -p /mnt/boot && sudo mount /dev/loop254p1 /mnt/boot
     - name: Docker builder
-      run: docker create --name debian-builder arm64v8/debian:stable
+      run: docker create --name void-builder voidlinux/voidlinux:latest
     - name: Add QEMU static
       run: docker cp /usr/bin/qemu-aarch64-static debian-builder:/usr/bin/qemu-aarch64-static
     - name: Commit builder
