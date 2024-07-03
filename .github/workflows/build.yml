@@ -43,7 +43,7 @@ jobs:
     - name: Docker import Void ROOTFS tarball
       run: curl https://repo-default.voidlinux.org/live/current/void-aarch64-musl-ROOTFS-20240314.tar.xz | xzcat | docker import - voidlinux/voidlinux:latest
     - name: Docker builder
-      run: docker create --name void-builder voidlinux/voidlinux:latest
+      run: docker create --name void-builder voidlinux/voidlinux:latest /bin/bash
     - name: Add QEMU static
       run: docker cp /usr/bin/qemu-aarch64-static void-builder:/usr/bin/qemu-aarch64-static
     - name: Commit builder
