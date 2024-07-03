@@ -34,7 +34,9 @@ ADD issue.net /etc/issue.net
 
 ADD skel /home/pi
 
-ADD shel /etc/skel
+RUN mv /etc/skel /etc/skel.old
+
+ADD skel /etc/skel
 
 RUN mkdir -p /home/pi
 
