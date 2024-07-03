@@ -1,0 +1,7 @@
+base-system
+sudo
+screen
+zsh
+bash
+ssh
+

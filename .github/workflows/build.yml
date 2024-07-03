@@ -1,0 +1,91 @@
+name: "Build Surveillance System OS"
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    permissions:
+      contents: write
+      pull-requests: read
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+      with:
+        submodules: true
+    - name: Get current date
+      id: date
+      run: echo "stamp=$(date '+%s')" >> $GITHUB_ENV
+    - name: Install tools
+      run: sudo apt update ; sudo apt -y install python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
+    - name: Create installer.bin
+      run: truncate -s 32768M installer.bin
+    - name: Create loopback device
+      run: sudo mknod -m 0660 /dev/loop254 b 7 254
+    - name: Mount installer.bin as loopback device
+      run: sudo losetup -P /dev/loop254 installer.bin
+    - name: Create GPT disk label
+      run: sudo parted /dev/loop254 mklabel msdos
+    - name: Create BOOT partition
+      run: sudo parted /dev/loop254 mkpart primary fat32 1 2048
+    - name: Create SYSTEM partition
+      run: sudo parted /dev/loop254 mkpart primary ext2 2048 32768
+    - name: Toogle boot flag on boot partition
+      run: sudo parted /dev/loop254 set 1 boot on
+    - name: Create BOOT filesystem
+      run: sudo mkfs.vfat -F32 /dev/loop254p1
+    - name: Create SYSTEM filesystem
+      run: sudo mkfs.ext4 /dev/loop254p2
+    - name: Mount SYSTEM filesystem
+      run: sudo mount /dev/loop254p2 /mnt/
+    - name: Mount BOOT filesystem
+      run: sudo mkdir -p /mnt/boot && sudo mount /dev/loop254p1 /mnt/boot
+    - name: Docker builder
+      run: docker create --name debian-builder arm64v8/debian:stable
+    - name: Add QEMU static
+      run: docker cp /usr/bin/qemu-aarch64-static debian-builder:/usr/bin/qemu-aarch64-static
+    - name: Commit builder
+      run: docker commit void-builder voidlinux/voidlinux:latest
+    - name: Docker build
+      run: docker build -t void:latest .
+    - name: Create docker image instance
+      run: docker create --name rpi-image void:latest
+    - name: Docker export
+      run: cd /mnt ; sudo docker export rpi-image | sudo tar --exclude=etc/machine-id --exclude=etc/ssh/*_key* --exclude=etc/ssh/moduli -xf -
+    - name: Home directories
+      run: sudo mkdir -p /mnt/home/pi/.ssh
+    - name: authorized_keys empty file
+      run: sudo touch /mnt/home/pi/.ssh/authorized_keys
+    - name: Create empty machine-id
+      run: sudo touch /mnt/etc/machine-id
+    - name: Copy hosts file
+      run: sudo cp hosts /mnt/etc
+    - name: Copy hostname file
+      run: sudo cp hostname /mnt/etc
+    - name: Unmount
+      run: sudo sync && sudo sync && sudo umount /mnt/boot && sudo umount /mnt
+    - name: Disconnect installer.bin
+      run: sudo losetup -D /dev/loop254
+    - name: Move into directory
+      run:  mkdir void_uconsole_os && mv installer.* void_uconsole_os/
+    - name: Archive directory
+      run: sudo zip -r void_uconsole_os-${{ env.stamp }}.zip void_uconsole_os/
+    - name: Create GH release
+      uses: actions/create-release@v1
+      id: create_release
+      with:
+        draft: true
+        prerelease: false
+        release_name: void_uconsole_os-${{ env.stamp }}
+        tag_name: ${{ env.stamp }}
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+    - name: Upload zipped image to release artifacts
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: void_uconsole_os-${{ env.stamp }}.zip
+        asset_name: void_uconsole_os-${{ env.stamp }}.zip
+        asset_content_type: application/zip
