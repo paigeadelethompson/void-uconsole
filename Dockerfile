@@ -14,6 +14,8 @@ ENV ARCH=aarch64
 
 ENV XBPS_ARCH=$ARCH
 
+ENV TIMEZONE=UTC
+
 ADD packages.txt /tmp/packages.txt
 
 RUN xbps-install -S -u xbps
