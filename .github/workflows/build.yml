@@ -24,7 +24,7 @@ jobs:
     - name: Patch kernel
       run: cd linux && git apply ../uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch && cd ..
     - name: Cross-compile kernel 
-      run: cd linux && export ARCH=arm64 && make V=1 bcm2711_defconfig && make V=1 -j2
+      run: cd linux && make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig && make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2
     - name: Create installer.bin
       run: truncate -s 32768M installer.bin
     - name: Create loopback device
