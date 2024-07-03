@@ -7,3 +7,4 @@ ssh
 git
 curl
 openssl-sys
+wget
