@@ -28,7 +28,7 @@ jobs:
     - name: Cross-compile kernel 
       run: cd linux && make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig && make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2
     - name: Create installer.bin
-      run: truncate -s 32768M installer.bin
+      run: truncate -s 30768M installer.bin
     - name: Create loopback device
       run: sudo mknod -m 0660 /dev/loop254 b 7 254
     - name: Mount installer.bin as loopback device
@@ -38,7 +38,7 @@ jobs:
     - name: Create BOOT partition
       run: sudo parted /dev/loop254 mkpart primary fat32 1 2048
     - name: Create SYSTEM partition
-      run: sudo parted /dev/loop254 mkpart primary ext2 2048 32768
+      run: sudo parted /dev/loop254 mkpart primary ext2 2048 30768
     - name: Toogle boot flag on boot partition
       run: sudo parted /dev/loop254 set 1 boot on
     - name: Create BOOT filesystem
