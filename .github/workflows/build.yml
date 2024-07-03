@@ -41,7 +41,7 @@ jobs:
     - name: Mount BOOT filesystem
       run: sudo mkdir -p /mnt/boot && sudo mount /dev/loop254p1 /mnt/boot
     - name: Docker import Void ROOTFS tarball
-      run: curl https://repo-default.voidlinux.org/live/current/void-aarch64-musl-ROOTFS-20240314.tar.xz | xzcat | docker import - voidlinux:latest
+      run: curl https://repo-default.voidlinux.org/live/current/void-aarch64-musl-ROOTFS-20240314.tar.xz | xzcat | docker import - voidlinux/voidlinux:latest
     - name: Docker builder
       run: docker create --name void-builder voidlinux/voidlinux:latest
     - name: Add QEMU static
