@@ -16,6 +16,8 @@ ENV XBPS_ARCH=$ARCH
 
 ADD packages.txt /tmp/packages.txt
 
+RUN xbps-install -u xbps
+
 RUN cat /tmp/packages.txt | xargs -i xbps-install -S -R "${REPO}" {}
 
 ADD startup.txt /tmp/startup.txt
