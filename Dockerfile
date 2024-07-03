@@ -121,3 +121,5 @@ RUN usermod -U pi
 RUN passwd -d pi
 
 ADD 99-uconsole.rules /etc/udev/rules.d/99-uconsole.rules
+
+RUN rm -rf /usr/src/linux
