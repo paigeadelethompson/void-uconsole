@@ -86,15 +86,7 @@ ADD linux /usr/src/linux
 
 WORKDIR /usr/src/linux
 
-# ENV ARCH=arm64
-
-# RUN git apply /home/pi/uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch 
-
-# RUN make V=1 bcm2711_defconfig
-
-# RUN make V=1 -j2
-
-RUN make V=1 -j2 modules_install
+RUN make ARCH=arm64 V=1 -j2 modules_install
 
 RUN cp arch/arm64/boot/Image ../boot/kernel8.img
 
