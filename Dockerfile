@@ -36,6 +36,12 @@ RUN mkdir /home/pi
 
 RUN mkdir /home/pi/.ssh
 
+RUN git clone https://github.com/cuu/skel.git /home/pi
+
+RUN rm -rf /home/pi/.git
+
+RUN git clone https://github.com/clockworkpi/uConsole.git /home/pi/uConsole
+
 RUN groupadd spi
 
 RUN groupadd i2c
@@ -75,9 +81,5 @@ RUN passwd -d pi
 RUN echo '/opt/vc/lib' > /etc/ld.so.conf.d/00-vmcs.conf
 
 ADD 99-uconsole.rules /etc/udev/rules.d/99-uconsole.rules
-
-RUN apt -y autoremove
-
-RUN rm -rf /var/lib/apt/lists/*
 
 RUN rm -rf /home

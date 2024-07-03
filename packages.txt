@@ -4,4 +4,6 @@ screen
 zsh
 bash
 ssh
-
+git
+curl
+wget
