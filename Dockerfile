@@ -90,37 +90,23 @@ ENV ARCH=arm64
 
 RUN git apply /home/pi/uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch 
 
-RUN make bcm2711_defconfig
+RUN make V=1 bcm2711_defconfig
 
-RUN make -j4
+RUN make V=1 -j4
 
-RUN mkdir -p ./modules && rm -rf ./modules/*
+RUN make V=1 modules_install
 
-RUN INSTALL_MOD_PATH=./modules make modules_install
+RUN INSTALL_MOD_PATH=./modules make V=1 modules_install
 
-RUN rm ./modules/lib/modules/*/build
+RUN cp arch/arm64/boot/Image ../boot/kernel8.img
 
-RUN rm ./modules/lib/modules/*/source
+RUN cp arch/arm/boot/dts/*.dtb /boot/firmware/
 
-RUN mkdir -p ../modules
+RUN cp arch/arm/boot/dts/broadcom/*.dtb /boot/firmware/
 
-RUN rm -rf ../modules/*
+RUN cp arch/arm/boot/dts/overlays/*.dtb* /boot/firmware/overlays/
 
-RUN cp -rav ./modules/* ../modules
-
-RUN mkdir -p ../out
-
-RUN rm -rf ../out/*
-
-RUN mkdir -p ../out/overlays
-
-RUN sudo cp arch/arm64/boot/Image ../out/kernel8.img
-
-RUN sudo cp arch/arm64/boot/dts/broadcom/*.dtb ../out
-
-RUN sudo cp arch/arm64/boot/dts/overlays/*.dtb* ../out/overlays/
-
-RUN sudo cp arch/arm64/boot/dts/overlays/README ../out/overlays/
+RUN cp arch/arm/boot/dts/overlays/README /boot/firmware/overlays/
 
 ENV ARCH=aarch64
 
