@@ -86,13 +86,13 @@ ADD linux /usr/src/linux
 
 WORKDIR /usr/src/linux
 
-ENV ARCH=arm64
+# ENV ARCH=arm64
 
-RUN git apply /home/pi/uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch 
+# RUN git apply /home/pi/uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch 
 
-RUN make V=1 bcm2711_defconfig
+# RUN make V=1 bcm2711_defconfig
 
-RUN make V=1 -j2
+# RUN make V=1 -j2
 
 RUN make V=1 -j2 modules_install
 
@@ -106,7 +106,7 @@ RUN cp arch/arm/boot/dts/overlays/*.dtb* /boot/firmware/overlays/
 
 RUN cp arch/arm/boot/dts/overlays/README /boot/firmware/overlays/
 
-ENV ARCH=aarch64
+# ENV ARCH=aarch64
 
 RUN usermod -U pi
 
