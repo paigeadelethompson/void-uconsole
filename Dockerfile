@@ -32,11 +32,13 @@ ADD fstab /etc/fstab
 
 ADD issue.net /etc/issue.net
 
-RUN mkdir /home/pi
-
-RUN mkdir /home/pi/.ssh
-
 RUN git clone https://github.com/cuu/skel.git /home/pi
+
+RUN git clone https://github.com/cuu/skel.git /etc/skel
+
+RUN mkdir -p /home/pi
+
+RUN mkdir -p /home/pi/.ssh
 
 RUN rm -rf /home/pi/.git
 
