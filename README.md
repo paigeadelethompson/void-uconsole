@@ -2,6 +2,10 @@
 - Download the zipped image file from the releases page
 - Extract the image, and write it to an SD card: `dd if=installer.bin of=/dev/mmcblk0 bs=1M status=progress`
 
+# Linux kernel source 
+The source tree is added as a sub-tree to speed up the build process; locked to `3a33f11c48572b9dd0fecac164b3990fc9234da8` but it can be
+updated with `git subtree` (Note: patches in https://github.com/clockworkpi/uConsole.git depend on this commit.)
+
 # Testing with QEmu 
 
 - Get the kernel 
