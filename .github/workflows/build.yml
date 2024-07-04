@@ -64,7 +64,7 @@ jobs:
     - name: Docker export
       run: cd /mnt ; sudo docker export rpi-image | sudo tar --exclude=etc/machine-id --exclude=etc/ssh/*_key* --exclude=etc/ssh/moduli -xf -
     - name: Delete QEMU BINFMT shim
-      run: rm -rf /mnt/usr/bin/qemu-aarch64-static
+      run: sudo rm -rf /mnt/usr/bin/qemu-aarch64-static
     - name: Home directories
       run: sudo mkdir -p /mnt/home/pi/.ssh
     - name: authorized_keys empty file
