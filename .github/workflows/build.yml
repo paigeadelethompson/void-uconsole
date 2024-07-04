@@ -17,7 +17,7 @@ jobs:
       id: date
       run: echo "stamp=$(date '+%s')" >> $GITHUB_ENV
     - name: Install tools
-      run: sudo apt update ; sudo apt -y install gcc-aarch64-linux-gnu python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
+      run: sudo apt update ; sudo apt -y install gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
     - name: clone external repos
       run: git clone https://github.com/raspberrypi/userland && git clone https://github.com/clockworkpi/uConsole.git && git clone https://github.com/cuu/skel.git 
 # && git clone https://github.com/raspberrypi/linux.git
