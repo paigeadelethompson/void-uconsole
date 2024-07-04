@@ -108,4 +108,4 @@ ADD 99-uconsole.rules /etc/udev/rules.d/99-uconsole.rules
 
 WORKDIR /
 
-RUN rm -rf /usr/src/linux
+# RUN rm -rf /usr/src/linux
