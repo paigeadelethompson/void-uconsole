@@ -90,13 +90,15 @@ RUN make ARCH=arm64 V=1 -j2 modules_install
 
 RUN cp arch/arm64/boot/Image /boot/kernel8.img
 
-RUN cp arch/arm/boot/dts/*.dtb /boot/firmware/
+RUN mkdir -p /boot/firmware
 
-RUN cp arch/arm/boot/dts/broadcom/*.dtb /boot/firmware/
+RUN cp arch/arm64/boot/dts/*.dtb /boot/firmware/ ; true
 
-RUN cp arch/arm/boot/dts/overlays/*.dtb* /boot/firmware/overlays/
+RUN cp arch/arm64/boot/dts/broadcom/*.dtb /boot/firmware/ ; true
 
-RUN cp arch/arm/boot/dts/overlays/README /boot/firmware/overlays/
+RUN cp arch/arm64/boot/dts/overlays/*.dtb* /boot/firmware/overlays/ ; true
+
+RUN cp arch/arm64/boot/dts/overlays/README /boot/firmware/overlays/ ; true
 
 RUN usermod -U pi
 
