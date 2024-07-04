@@ -88,17 +88,15 @@ WORKDIR /usr/src/linux
 
 RUN make ARCH=arm64 V=1 -j2 modules_install
 
-RUN cp arch/arm64/boot/Image /boot/kernel8.img
+RUN mkdir -p /boot/firmware/overlays
 
-RUN mkdir -p /boot/firmware
+RUN sudo cp arch/arm64/boot/Image.gz /boot/firmware/$KERNEL.img
 
-RUN cp arch/arm64/boot/dts/*.dtb /boot/firmware/ ; true
+RUN sudo cp arch/arm64/boot/dts/broadcom/*.dtb /boot/firmware/
 
-RUN cp arch/arm64/boot/dts/broadcom/*.dtb /boot/firmware/ ; true
+RUN sudo cp arch/arm64/boot/dts/overlays/*.dtb* /boot/firmware/overlays/
 
-RUN cp arch/arm64/boot/dts/overlays/*.dtb* /boot/firmware/overlays/ ; true
-
-RUN cp arch/arm64/boot/dts/overlays/README /boot/firmware/overlays/ ; true
+RUN sudo cp arch/arm64/boot/dts/overlays/README /boot/firmware/overlays/
 
 RUN usermod -U pi
 
@@ -108,4 +106,4 @@ ADD 99-uconsole.rules /etc/udev/rules.d/99-uconsole.rules
 
 WORKDIR /
 
-# RUN rm -rf /usr/src/linux
+RUN rm -rf /usr/src/linux
