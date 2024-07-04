@@ -88,15 +88,15 @@ WORKDIR /usr/src/linux
 
 RUN make ARCH=arm64 V=1 -j2 modules_install
 
-RUN mkdir -p /boot/firmware/overlays
+RUN mkdir -p /boot/overlays
 
-RUN sudo cp arch/arm64/boot/Image.gz /boot/firmware/$KERNEL.img
+RUN sudo cp arch/arm64/boot/Image.gz /boot/kernel8.img
 
-RUN sudo cp arch/arm64/boot/dts/broadcom/*.dtb /boot/firmware/
+RUN sudo cp arch/arm64/boot/dts/broadcom/*.dtb /boot/
 
-RUN sudo cp arch/arm64/boot/dts/overlays/*.dtb* /boot/firmware/overlays/
+RUN sudo cp arch/arm64/boot/dts/overlays/*.dtb* /boot/overlays/
 
-RUN sudo cp arch/arm64/boot/dts/overlays/README /boot/firmware/overlays/
+RUN sudo cp arch/arm64/boot/dts/overlays/README /boot/overlays/
 
 RUN usermod -U pi
 
