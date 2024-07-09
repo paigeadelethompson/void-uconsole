@@ -1,5 +1,7 @@
 ![uConsole](https://static.wixstatic.com/media/3833f7_9e9fc3ed88534fb0b1eae043b3d5906e~mv2.png/v1/fill/w_480,h_480,al_c,q_85,usm_0.66_1.00_0.01,enc_auto/3833f7_9e9fc3ed88534fb0b1eae043b3d5906e~mv2.png)
 
+- https://www.clockworkpi.com/product-page/uconsole-kit-r-01
+
 # Installation 
 - Download the zipped image file from the releases page
 - Extract the image, and write it to an SD card: `dd if=installer.bin of=/dev/mmcblk0 bs=1M status=progress`
