@@ -513,7 +513,7 @@ void ice_init_arfs(struct ice_vsi *vsi)
 	if (!vsi || vsi->type != ICE_VSI_PF)
 		return;
 
-	arfs_fltr_list = kzalloc(sizeof(*arfs_fltr_list) * ICE_MAX_ARFS_LIST,
+	arfs_fltr_list = kcalloc(ICE_MAX_ARFS_LIST, sizeof(*arfs_fltr_list),
 				 GFP_KERNEL);
 	if (!arfs_fltr_list)
 		return;
@@ -577,12 +577,11 @@ void ice_free_cpu_rx_rmap(struct ice_vsi *vsi)
 {
 	struct net_device *netdev;
 
-	if (!vsi || vsi->type != ICE_VSI_PF || !vsi->arfs_fltr_list)
+	if (!vsi || vsi->type != ICE_VSI_PF)
 		return;
 
 	netdev = vsi->netdev;
-	if (!netdev || !netdev->rx_cpu_rmap ||
-	    netdev->reg_state != NETREG_REGISTERED)
+	if (!netdev || !netdev->rx_cpu_rmap)
 		return;
 
 	free_irq_cpu_rmap(netdev->rx_cpu_rmap);
@@ -597,15 +596,14 @@ int ice_set_cpu_rx_rmap(struct ice_vsi *vsi)
 {
 	struct net_device *netdev;
 	struct ice_pf *pf;
-	int base_idx, i;
+	int i;
 
 	if (!vsi || vsi->type != ICE_VSI_PF)
-		return -EINVAL;
+		return 0;
 
 	pf = vsi->back;
 	netdev = vsi->netdev;
-	if (!pf || !netdev || !vsi->num_q_vectors ||
-	    vsi->netdev->reg_state != NETREG_REGISTERED)
+	if (!pf || !netdev || !vsi->num_q_vectors)
 		return -EINVAL;
 
 	netdev_dbg(netdev, "Setup CPU RMAP: vsi type 0x%x, ifname %s, q_vectors %d\n",
@@ -615,10 +613,9 @@ int ice_set_cpu_rx_rmap(struct ice_vsi *vsi)
 	if (unlikely(!netdev->rx_cpu_rmap))
 		return -EINVAL;
 
-	base_idx = vsi->base_vector;
-	for (i = 0; i < vsi->num_q_vectors; i++)
+	ice_for_each_q_vector(vsi, i)
 		if (irq_cpu_rmap_add(netdev->rx_cpu_rmap,
-				     pf->msix_entries[base_idx + i].vector)) {
+				     vsi->q_vectors[i]->irq.virq)) {
 			ice_free_cpu_rx_rmap(vsi);
 			return -EINVAL;
 		}
@@ -638,7 +635,6 @@ void ice_remove_arfs(struct ice_pf *pf)
 	if (!pf_vsi)
 		return;
 
-	ice_free_cpu_rx_rmap(pf_vsi);
 	ice_clear_arfs(pf_vsi);
 }
 
@@ -655,9 +651,5 @@ void ice_rebuild_arfs(struct ice_pf *pf)
 		return;
 
 	ice_remove_arfs(pf);
-	if (ice_set_cpu_rx_rmap(pf_vsi)) {
-		dev_err(ice_pf_to_dev(pf), "Failed to rebuild aRFS\n");
-		return;
-	}
 	ice_init_arfs(pf_vsi);
 }

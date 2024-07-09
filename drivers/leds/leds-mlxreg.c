@@ -8,7 +8,6 @@
 #include <linux/io.h>
 #include <linux/leds.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
 #include <linux/platform_data/mlxreg.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -28,10 +27,11 @@
  * struct mlxreg_led_data - led control data:
  *
  * @data: led configuration data;
- * @led_classdev: led class data;
+ * @led_cdev: led class data;
  * @base_color: base led color (other colors have constant offset from base);
  * @led_data: led data;
  * @data_parent: pointer to private device control data of parent;
+ * @led_cdev_name: class device name
  */
 struct mlxreg_led_data {
 	struct mlxreg_core_data *data;

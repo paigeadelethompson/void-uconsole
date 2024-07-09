@@ -64,7 +64,7 @@ struct bcm2835_smi_instance {
 	struct device *dev;
 	struct smi_settings settings;
 	__iomem void *smi_regs_ptr;
-	dma_addr_t smi_regs_busaddr;
+	phys_addr_t smi_regs_busaddr;
 
 	struct dma_chan *dma_chan;
 	struct dma_slave_config dma_config;
@@ -689,7 +689,7 @@ void bcm2835_smi_write_buf(
 			inst->dev,
 			(void *)buf,
 			n_bytes,
-			DMA_MEM_TO_DEV);
+			DMA_TO_DEVICE);
 		struct scatterlist *sgl =
 			smi_scatterlist_from_buffer(inst, phy_addr, n_bytes,
 				&inst->buffer_sgl);
@@ -702,7 +702,7 @@ void bcm2835_smi_write_buf(
 		smi_dma_write_sgl(inst, sgl, 1, n_bytes);
 
 		dma_unmap_single
-			(inst->dev, phy_addr, n_bytes, DMA_MEM_TO_DEV);
+			(inst->dev, phy_addr, n_bytes, DMA_TO_DEVICE);
 	} else if (n_bytes) {
 		smi_write_fifo(inst, (uint32_t *) buf, n_bytes);
 	}
@@ -748,7 +748,7 @@ void bcm2835_smi_read_buf(struct bcm2835_smi_instance *inst,
 	if (n_bytes > DMA_THRESHOLD_BYTES) {
 		dma_addr_t phy_addr = dma_map_single(inst->dev,
 						     buf, n_bytes,
-						     DMA_DEV_TO_MEM);
+						     DMA_FROM_DEVICE);
 		struct scatterlist *sgl = smi_scatterlist_from_buffer(
 			inst, phy_addr, n_bytes,
 			&inst->buffer_sgl);
@@ -758,7 +758,7 @@ void bcm2835_smi_read_buf(struct bcm2835_smi_instance *inst,
 			goto out;
 		}
 		smi_dma_read_sgl(inst, sgl, 1, n_bytes);
-		dma_unmap_single(inst->dev, phy_addr, n_bytes, DMA_DEV_TO_MEM);
+		dma_unmap_single(inst->dev, phy_addr, n_bytes, DMA_FROM_DEVICE);
 	} else if (n_bytes) {
 		smi_read_fifo(inst, (uint32_t *)buf, n_bytes);
 	}
@@ -858,7 +858,6 @@ static int bcm2835_smi_probe(struct platform_device *pdev)
 	struct device_node *node = dev->of_node;
 	struct resource *ioresource;
 	struct bcm2835_smi_instance *inst;
-	const __be32 *addr;
 
 	/* We require device tree support */
 	if (!node)
@@ -872,14 +871,13 @@ static int bcm2835_smi_probe(struct platform_device *pdev)
 	inst->dev = dev;
 	spin_lock_init(&inst->transaction_lock);
 
-	ioresource = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	inst->smi_regs_ptr = devm_ioremap_resource(dev, ioresource);
+	inst->smi_regs_ptr = devm_platform_get_and_ioremap_resource(pdev, 0,
+								    &ioresource);
 	if (IS_ERR(inst->smi_regs_ptr)) {
 		err = PTR_ERR(inst->smi_regs_ptr);
 		goto err;
 	}
-	addr = of_get_address(node, 0, NULL, NULL);
-	inst->smi_regs_busaddr = be32_to_cpu(*addr);
+	inst->smi_regs_busaddr = ioresource->start;
 
 	err = bcm2835_smi_dma_setup(inst);
 	if (err)

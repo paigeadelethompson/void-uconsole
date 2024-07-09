@@ -15,7 +15,6 @@
 #include <linux/zalloc.h>
 #include "util/symbol.h"
 
-#include "perf.h"
 #include "util/debug.h"
 
 #include "util/evlist.h"
@@ -36,6 +35,7 @@
 #include "util/block-range.h"
 #include "util/map_symbol.h"
 #include "util/branch.h"
+#include "util/util.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -45,11 +45,17 @@
 struct perf_annotate {
 	struct perf_tool tool;
 	struct perf_session *session;
-	struct annotation_options opts;
-	bool	   use_tui, use_stdio, use_stdio2, use_gtk;
+#ifdef HAVE_SLANG_SUPPORT
+	bool	   use_tui;
+#endif
+	bool	   use_stdio, use_stdio2;
+#ifdef HAVE_GTK2_SUPPORT
+	bool	   use_gtk;
+#endif
 	bool	   skip_missing;
 	bool	   has_br_stack;
 	bool	   group_set;
+	float	   min_percent;
 	const char *sym_hist_filter;
 	const char *cpu_list;
 	DECLARE_BITMAP(cpu_bitmap, MAX_NR_CPUS);
@@ -177,7 +183,7 @@ out:
 
 static int process_branch_callback(struct evsel *evsel,
 				   struct perf_sample *sample,
-				   struct addr_location *al __maybe_unused,
+				   struct addr_location *al,
 				   struct perf_annotate *ann,
 				   struct machine *machine)
 {
@@ -188,22 +194,28 @@ static int process_branch_callback(struct evsel *evsel,
 		.hide_unresolved	= symbol_conf.hide_unresolved,
 		.ops		= &hist_iter_branch,
 	};
-
 	struct addr_location a;
 	int ret;
 
-	if (machine__resolve(machine, &a, sample) < 0)
-		return -1;
+	addr_location__init(&a);
+	if (machine__resolve(machine, &a, sample) < 0) {
+		ret = -1;
+		goto out;
+	}
 
-	if (a.sym == NULL)
-		return 0;
+	if (a.sym == NULL) {
+		ret = 0;
+		goto out;
+	}
 
 	if (a.map != NULL)
-		a.map->dso->hit = 1;
+		map__dso(a.map)->hit = 1;
 
 	hist__account_cycles(sample->branch_stack, al, sample, false, NULL);
 
 	ret = hist_entry_iter__add(&iter, &a, PERF_MAX_STACK_DEPTH, ann);
+out:
+	addr_location__exit(&a);
 	return ret;
 }
 
@@ -230,16 +242,17 @@ static int evsel__add_sample(struct evsel *evsel, struct perf_sample *sample,
 		 * the DSO?
 		 */
 		if (al->sym != NULL) {
-			rb_erase_cached(&al->sym->rb_node,
-				 &al->map->dso->symbols);
+			struct dso *dso = map__dso(al->map);
+
+			rb_erase_cached(&al->sym->rb_node, &dso->symbols);
 			symbol__delete(al->sym);
-			dso__reset_find_symbol_cache(al->map->dso);
+			dso__reset_find_symbol_cache(dso);
 		}
 		return 0;
 	}
 
 	/*
-	 * XXX filtered samples can still have branch entires pointing into our
+	 * XXX filtered samples can still have branch entries pointing into our
 	 * symbol and are missed.
 	 */
 	process_branch_stack(sample->branch_stack, al, sample);
@@ -247,7 +260,7 @@ static int evsel__add_sample(struct evsel *evsel, struct perf_sample *sample,
 	if (ann->has_br_stack && has_annotation(ann))
 		return process_branch_callback(evsel, sample, al, ann, machine);
 
-	he = hists__add_entry(hists, al, NULL, NULL, NULL, sample, true);
+	he = hists__add_entry(hists, al, NULL, NULL, NULL, NULL, sample, true);
 	if (he == NULL)
 		return -ENOMEM;
 
@@ -266,10 +279,12 @@ static int process_sample_event(struct perf_tool *tool,
 	struct addr_location al;
 	int ret = 0;
 
+	addr_location__init(&al);
 	if (machine__resolve(machine, &al, sample) < 0) {
 		pr_warning("problem processing %d event, skipping it.\n",
 			   event->header.type);
-		return -1;
+		ret = -1;
+		goto out_put;
 	}
 
 	if (ann->cpu_list && !test_bit(sample->cpu, ann->cpu_bitmap))
@@ -282,7 +297,7 @@ static int process_sample_event(struct perf_tool *tool,
 		ret = -1;
 	}
 out_put:
-	addr_location__put(&al);
+	addr_location__exit(&al);
 	return ret;
 }
 
@@ -299,9 +314,9 @@ static int hist_entry__tty_annotate(struct hist_entry *he,
 				    struct perf_annotate *ann)
 {
 	if (!ann->use_stdio2)
-		return symbol__tty_annotate(&he->ms, evsel, &ann->opts);
+		return symbol__tty_annotate(&he->ms, evsel);
 
-	return symbol__tty_annotate2(&he->ms, evsel, &ann->opts);
+	return symbol__tty_annotate2(&he->ms, evsel);
 }
 
 static void hists__find_annotations(struct hists *hists,
@@ -315,17 +330,28 @@ static void hists__find_annotations(struct hists *hists,
 		struct hist_entry *he = rb_entry(nd, struct hist_entry, rb_node);
 		struct annotation *notes;
 
-		if (he->ms.sym == NULL || he->ms.map->dso->annotate_warned)
+		if (he->ms.sym == NULL || map__dso(he->ms.map)->annotate_warned)
 			goto find_next;
 
 		if (ann->sym_hist_filter &&
 		    (strcmp(he->ms.sym->name, ann->sym_hist_filter) != 0))
 			goto find_next;
 
+		if (ann->min_percent) {
+			float percent = 0;
+			u64 total = hists__total_period(hists);
+
+			if (total)
+				percent = 100.0 * he->stat.period / total;
+
+			if (percent < ann->min_percent)
+				goto find_next;
+		}
+
 		notes = symbol__annotation(he->ms.sym);
 		if (notes->src == NULL) {
 find_next:
-			if (key == K_LEFT)
+			if (key == K_LEFT || key == '<')
 				nd = rb_prev(nd);
 			else
 				nd = rb_next(nd);
@@ -352,7 +378,7 @@ find_next:
 			/* skip missing symbols */
 			nd = rb_next(nd);
 		} else if (use_browser == 1) {
-			key = hist_entry__tui_annotate(he, evsel, NULL, &ann->opts);
+			key = hist_entry__tui_annotate(he, evsel, NULL, &annotate_opts);
 
 			switch (key) {
 			case -1:
@@ -360,9 +386,11 @@ find_next:
 					return;
 				/* fall through */
 			case K_RIGHT:
+			case '>':
 				next = rb_next(nd);
 				break;
 			case K_LEFT:
+			case '<':
 				next = rb_prev(nd);
 				break;
 			default:
@@ -374,13 +402,6 @@ find_next:
 		} else {
 			hist_entry__tty_annotate(he, evsel, ann);
 			nd = rb_next(nd);
-			/*
-			 * Since we have a hist_entry per IP for the same
-			 * symbol, free he->ms.sym->src to signal we already
-			 * processed this symbol.
-			 */
-			zfree(&notes->src->cycles_hist);
-			zfree(&notes->src);
 		}
 	}
 }
@@ -399,9 +420,9 @@ static int __cmd_annotate(struct perf_annotate *ann)
 			goto out;
 	}
 
-	if (!ann->opts.objdump_path) {
+	if (!annotate_opts.objdump_path) {
 		ret = perf_env__lookup_objdump(&session->header.env,
-					       &ann->opts.objdump_path);
+					       &annotate_opts.objdump_path);
 		if (ret)
 			goto out;
 	}
@@ -411,8 +432,8 @@ static int __cmd_annotate(struct perf_annotate *ann)
 		goto out;
 
 	if (dump_trace) {
-		perf_session__fprintf_nr_events(session, stdout);
-		perf_evlist__fprintf_nr_events(session->evlist, stdout);
+		perf_session__fprintf_nr_events(session, stdout, false);
+		evlist__fprintf_nr_events(session->evlist, stdout, false);
 		goto out;
 	}
 
@@ -425,7 +446,7 @@ static int __cmd_annotate(struct perf_annotate *ann)
 	total_nr_samples = 0;
 	evlist__for_each_entry(session->evlist, pos) {
 		struct hists *hists = evsel__hists(pos);
-		u32 nr_samples = hists->stats.nr_events[PERF_RECORD_SAMPLE];
+		u32 nr_samples = hists->stats.nr_samples;
 
 		if (nr_samples > 0) {
 			total_nr_samples += nr_samples;
@@ -462,6 +483,16 @@ out:
 	return ret;
 }
 
+static int parse_percent_limit(const struct option *opt, const char *str,
+			       int unset __maybe_unused)
+{
+	struct perf_annotate *ann = opt->value;
+	double pcnt = strtof(str, NULL);
+
+	ann->min_percent = pcnt;
+	return 0;
+}
+
 static const char * const annotate_usage[] = {
 	"perf annotate [<options>]",
 	NULL
@@ -480,16 +511,24 @@ int cmd_annotate(int argc, const char **argv)
 			.namespaces = perf_event__process_namespaces,
 			.attr	= perf_event__process_attr,
 			.build_id = perf_event__process_build_id,
+#ifdef HAVE_LIBTRACEEVENT
 			.tracing_data   = perf_event__process_tracing_data,
+#endif
+			.id_index	= perf_event__process_id_index,
+			.auxtrace_info	= perf_event__process_auxtrace_info,
+			.auxtrace	= perf_event__process_auxtrace,
 			.feature	= process_feature_event,
 			.ordered_events = true,
 			.ordering_requires_timestamps = true,
 		},
-		.opts = annotation__default_options,
 	};
 	struct perf_data data = {
 		.mode  = PERF_DATA_MODE_READ,
 	};
+	struct itrace_synth_opts itrace_synth_opts = {
+		.set = 0,
+	};
+	const char *disassembler_style = NULL, *objdump_path = NULL, *addr2line_path = NULL;
 	struct option options[] = {
 	OPT_STRING('i', "input", &input_name, "file",
 		    "input file name"),
@@ -500,11 +539,15 @@ int cmd_annotate(int argc, const char **argv)
 	OPT_BOOLEAN('f', "force", &data.force, "don't complain, do it"),
 	OPT_INCR('v', "verbose", &verbose,
 		    "be more verbose (show symbol address, etc)"),
-	OPT_BOOLEAN('q', "quiet", &quiet, "do now show any message"),
+	OPT_BOOLEAN('q', "quiet", &quiet, "do now show any warnings or messages"),
 	OPT_BOOLEAN('D', "dump-raw-trace", &dump_trace,
 		    "dump raw trace in ASCII"),
+#ifdef HAVE_GTK2_SUPPORT
 	OPT_BOOLEAN(0, "gtk", &annotate.use_gtk, "Use the GTK interface"),
+#endif
+#ifdef HAVE_SLANG_SUPPORT
 	OPT_BOOLEAN(0, "tui", &annotate.use_tui, "Use the TUI interface"),
+#endif
 	OPT_BOOLEAN(0, "stdio", &annotate.use_stdio, "Use the stdio interface"),
 	OPT_BOOLEAN(0, "stdio2", &annotate.use_stdio2, "Use the stdio interface"),
 	OPT_BOOLEAN(0, "ignore-vmlinux", &symbol_conf.ignore_vmlinux,
@@ -513,9 +556,9 @@ int cmd_annotate(int argc, const char **argv)
 		   "file", "vmlinux pathname"),
 	OPT_BOOLEAN('m', "modules", &symbol_conf.use_modules,
 		    "load module symbols - WARNING: use only with -k and LIVE kernel"),
-	OPT_BOOLEAN('l', "print-line", &annotate.opts.print_lines,
+	OPT_BOOLEAN('l', "print-line", &annotate_opts.print_lines,
 		    "print matching source lines (may be slow)"),
-	OPT_BOOLEAN('P', "full-paths", &annotate.opts.full_path,
+	OPT_BOOLEAN('P', "full-paths", &annotate_opts.full_path,
 		    "Don't shorten the displayed pathnames"),
 	OPT_BOOLEAN(0, "skip-missing", &annotate.skip_missing,
 		    "Skip symbols that cannot be annotated"),
@@ -526,20 +569,24 @@ int cmd_annotate(int argc, const char **argv)
 	OPT_CALLBACK(0, "symfs", NULL, "directory",
 		     "Look for files with symbols relative to this directory",
 		     symbol__config_symfs),
-	OPT_BOOLEAN(0, "source", &annotate.opts.annotate_src,
+	OPT_BOOLEAN(0, "source", &annotate_opts.annotate_src,
 		    "Interleave source code with assembly code (default)"),
-	OPT_BOOLEAN(0, "asm-raw", &annotate.opts.show_asm_raw,
+	OPT_BOOLEAN(0, "asm-raw", &annotate_opts.show_asm_raw,
 		    "Display raw encoding of assembly instructions (default)"),
-	OPT_STRING('M', "disassembler-style", &annotate.opts.disassembler_style, "disassembler style",
+	OPT_STRING('M', "disassembler-style", &disassembler_style, "disassembler style",
 		   "Specify disassembler style (e.g. -M intel for intel syntax)"),
-	OPT_STRING(0, "prefix", &annotate.opts.prefix, "prefix",
+	OPT_STRING(0, "prefix", &annotate_opts.prefix, "prefix",
 		    "Add prefix to source file path names in programs (with --prefix-strip)"),
-	OPT_STRING(0, "prefix-strip", &annotate.opts.prefix_strip, "N",
+	OPT_STRING(0, "prefix-strip", &annotate_opts.prefix_strip, "N",
 		    "Strip first N entries of source file path name in programs (with --prefix)"),
-	OPT_STRING(0, "objdump", &annotate.opts.objdump_path, "path",
+	OPT_STRING(0, "objdump", &objdump_path, "path",
 		   "objdump binary to use for disassembly and annotations"),
-	OPT_BOOLEAN(0, "group", &symbol_conf.event_group,
-		    "Show event group information together"),
+	OPT_STRING(0, "addr2line", &addr2line_path, "path",
+		   "addr2line binary to use for line numbers"),
+	OPT_BOOLEAN(0, "demangle", &symbol_conf.demangle,
+		    "Enable symbol demangling"),
+	OPT_BOOLEAN(0, "demangle-kernel", &symbol_conf.demangle_kernel,
+		    "Enable kernel symbol demangling"),
 	OPT_BOOLEAN(0, "show-total-period", &symbol_conf.show_total_period,
 		    "Show a column with the sum of periods"),
 	OPT_BOOLEAN('n', "show-nr-samples", &symbol_conf.show_nr_samples,
@@ -547,9 +594,14 @@ int cmd_annotate(int argc, const char **argv)
 	OPT_CALLBACK_DEFAULT(0, "stdio-color", NULL, "mode",
 			     "'always' (default), 'never' or 'auto' only applicable to --stdio mode",
 			     stdio__config_color, "always"),
-	OPT_CALLBACK(0, "percent-type", &annotate.opts, "local-period",
+	OPT_CALLBACK(0, "percent-type", &annotate_opts, "local-period",
 		     "Set percent type local/global-period/hits",
 		     annotate_parse_percent_type),
+	OPT_CALLBACK(0, "percent-limit", &annotate, "percent",
+		     "Don't show entries under that percent", parse_percent_limit),
+	OPT_CALLBACK_OPTARG(0, "itrace", &itrace_synth_opts, NULL, "opts",
+			    "Instruction Tracing options\n" ITRACE_HELP,
+			    itrace_parse_synth_opts),
 
 	OPT_END()
 	};
@@ -558,12 +610,13 @@ int cmd_annotate(int argc, const char **argv)
 	set_option_flag(options, 0, "show-total-period", PARSE_OPT_EXCLUSIVE);
 	set_option_flag(options, 0, "show-nr-samples", PARSE_OPT_EXCLUSIVE);
 
+	annotation_options__init(&annotate_opts);
 
 	ret = hists__init();
 	if (ret < 0)
 		return ret;
 
-	annotation_config__init(&annotate.opts);
+	annotation_config__init(&annotate_opts);
 
 	argc = parse_options(argc, argv, options, annotate_usage, 0);
 	if (argc) {
@@ -577,28 +630,52 @@ int cmd_annotate(int argc, const char **argv)
 		annotate.sym_hist_filter = argv[0];
 	}
 
-	if (annotate_check_args(&annotate.opts) < 0)
+	if (disassembler_style) {
+		annotate_opts.disassembler_style = strdup(disassembler_style);
+		if (!annotate_opts.disassembler_style)
+			return -ENOMEM;
+	}
+	if (objdump_path) {
+		annotate_opts.objdump_path = strdup(objdump_path);
+		if (!annotate_opts.objdump_path)
+			return -ENOMEM;
+	}
+	if (addr2line_path) {
+		symbol_conf.addr2line_path = strdup(addr2line_path);
+		if (!symbol_conf.addr2line_path)
+			return -ENOMEM;
+	}
+
+	if (annotate_check_args(&annotate_opts) < 0)
 		return -EINVAL;
 
+#ifdef HAVE_GTK2_SUPPORT
 	if (symbol_conf.show_nr_samples && annotate.use_gtk) {
 		pr_err("--show-nr-samples is not available in --gtk mode at this time\n");
 		return ret;
 	}
+#endif
+
+	ret = symbol__validate_sym_arguments();
+	if (ret)
+		return ret;
 
 	if (quiet)
 		perf_quiet_option();
 
 	data.path = input_name;
 
-	annotate.session = perf_session__new(&data, false, &annotate.tool);
+	annotate.session = perf_session__new(&data, &annotate.tool);
 	if (IS_ERR(annotate.session))
 		return PTR_ERR(annotate.session);
+
+	annotate.session->itrace_synth_opts = &itrace_synth_opts;
 
 	annotate.has_br_stack = perf_header__has_feat(&annotate.session->header,
 						      HEADER_BRANCH_STACK);
 
 	if (annotate.group_set)
-		perf_evlist__force_leader(annotate.session->evlist);
+		evlist__force_leader(annotate.session->evlist);
 
 	ret = symbol__annotation_init();
 	if (ret < 0)
@@ -612,36 +689,45 @@ int cmd_annotate(int argc, const char **argv)
 
 	if (annotate.use_stdio || annotate.use_stdio2)
 		use_browser = 0;
+#ifdef HAVE_SLANG_SUPPORT
 	else if (annotate.use_tui)
 		use_browser = 1;
+#endif
+#ifdef HAVE_GTK2_SUPPORT
 	else if (annotate.use_gtk)
 		use_browser = 2;
+#endif
 
 	setup_browser(true);
 
-	if ((use_browser == 1 || annotate.use_stdio2) && annotate.has_br_stack) {
+	/*
+	 * Events of different processes may correspond to the same
+	 * symbol, we do not care about the processes in annotate,
+	 * set sort order to avoid repeated output.
+	 */
+	sort_order = "dso,symbol";
+
+	/*
+	 * Set SORT_MODE__BRANCH so that annotate display IPC/Cycle
+	 * if branch info is in perf data in TUI mode.
+	 */
+	if ((use_browser == 1 || annotate.use_stdio2) && annotate.has_br_stack)
 		sort__mode = SORT_MODE__BRANCH;
-		if (setup_sorting(annotate.session->evlist) < 0)
-			usage_with_options(annotate_usage, options);
-	} else {
-		if (setup_sorting(NULL) < 0)
-			usage_with_options(annotate_usage, options);
-	}
+
+	if (setup_sorting(NULL) < 0)
+		usage_with_options(annotate_usage, options);
 
 	ret = __cmd_annotate(&annotate);
 
 out_delete:
 	/*
-	 * Speed up the exit process, for large files this can
-	 * take quite a while.
-	 *
-	 * XXX Enable this when using valgrind or if we ever
-	 * librarize this command.
-	 *
-	 * Also experiment with obstacks to see how much speed
-	 * up we'll get here.
-	 *
-	 * perf_session__delete(session);
+	 * Speed up the exit process by only deleting for debug builds. For
+	 * large files this can save time.
 	 */
+#ifndef NDEBUG
+	perf_session__delete(annotate.session);
+#endif
+	annotation_options__exit(&annotate_opts);
+
 	return ret;
 }

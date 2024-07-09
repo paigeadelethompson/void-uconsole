@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: (GPL-2.0-or-later or MIT) */
+/* SPDX-License-Identifier: (GPL-2.0-or-later OR MIT) */
 /*
  * Author: David Heidelberg <david@ixit.cz>
  */
@@ -15,5 +15,9 @@
 #define SMB3XX_CHG_ENABLE_SW			0
 #define SMB3XX_CHG_ENABLE_PIN_ACTIVE_LOW	1
 #define SMB3XX_CHG_ENABLE_PIN_ACTIVE_HIGH	2
+
+/* Polarity of INOK signal */
+#define SMB3XX_SYSOK_INOK_ACTIVE_LOW		0
+#define SMB3XX_SYSOK_INOK_ACTIVE_HIGH		1
 
 #endif

@@ -42,8 +42,7 @@ static struct i2c_driver max20751_driver = {
 	.driver = {
 		   .name = "max20751",
 		   },
-	.probe_new = max20751_probe,
-	.remove = pmbus_do_remove,
+	.probe = max20751_probe,
 	.id_table = max20751_id,
 };
 
@@ -52,3 +51,4 @@ module_i2c_driver(max20751_driver);
 MODULE_AUTHOR("Guenter Roeck <linux@roeck-us.net>");
 MODULE_DESCRIPTION("PMBus driver for Maxim MAX20751");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(PMBUS);

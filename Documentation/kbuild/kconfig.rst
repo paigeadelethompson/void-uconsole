@@ -10,6 +10,8 @@ The xconfig ('qconf'), menuconfig ('mconf'), and nconfig ('nconf')
 programs also have embedded help text.  Be sure to check that for
 navigation, search, and other general help text.
 
+The gconfig ('gconf') program has limited help text.
+
 General
 -------
 
@@ -41,10 +43,27 @@ KCONFIG_CONFIG
 This environment variable can be used to specify a default kernel config
 file name to override the default name of ".config".
 
+KCONFIG_DEFCONFIG_LIST
+----------------------
+
+This environment variable specifies a list of config files which can be used
+as a base configuration in case the .config does not exist yet. Entries in
+the list are separated with whitespaces to each other, and the first one
+that exists is used.
+
 KCONFIG_OVERWRITECONFIG
 -----------------------
 If you set KCONFIG_OVERWRITECONFIG in the environment, Kconfig will not
 break symlinks when .config is a symlink to somewhere else.
+
+KCONFIG_WARN_UNKNOWN_SYMBOLS
+----------------------------
+This environment variable makes Kconfig warn about all unrecognized
+symbols in the config input.
+
+KCONFIG_WERROR
+--------------
+If set, Kconfig treats warnings as errors.
 
 `CONFIG_`
 ---------
@@ -202,6 +221,10 @@ Searching in menuconfig:
 	first (and in alphabetical order), then come all other symbols,
 	sorted in alphabetical order.
 
+	In this menu, pressing the key in the (#) prefix will jump
+	directly to that location. You will be returned to the current
+	search results after exiting this new menu.
+
 ----------------------------------------------------------------------
 
 User interface options for 'menuconfig'
@@ -253,6 +276,10 @@ Searching in nconfig:
 
 	F8 (SymSearch) searches the configuration symbols for the
 	given string or regular expression (regex).
+
+	In the SymSearch, pressing the key in the (#) prefix will
+	jump directly to that location. You will be returned to the
+	current search results after exiting this new menu.
 
 NCONFIG_MODE
 ------------

@@ -177,8 +177,8 @@ static int snd_hwdep_info(struct snd_hwdep *hw,
 	
 	memset(&info, 0, sizeof(info));
 	info.card = hw->card->number;
-	strlcpy(info.id, hw->id, sizeof(info.id));	
-	strlcpy(info.name, hw->name, sizeof(info.name));
+	strscpy(info.id, hw->id, sizeof(info.id));
+	strscpy(info.name, hw->name, sizeof(info.name));
 	info.iface = hw->iface;
 	if (copy_to_user(_info, &info, sizeof(info)))
 		return -EFAULT;
@@ -195,7 +195,8 @@ static int snd_hwdep_dsp_status(struct snd_hwdep *hw,
 		return -ENXIO;
 	memset(&info, 0, sizeof(info));
 	info.dsp_loaded = hw->dsp_loaded;
-	if ((err = hw->ops.dsp_status(hw, &info)) < 0)
+	err = hw->ops.dsp_status(hw, &info);
+	if (err < 0)
 		return err;
 	if (copy_to_user(_info, &info, sizeof(info)))
 		return -EFAULT;
@@ -337,9 +338,14 @@ static const struct file_operations snd_hwdep_f_ops =
 	.mmap =		snd_hwdep_mmap,
 };
 
-static void release_hwdep_device(struct device *dev)
+static void snd_hwdep_free(struct snd_hwdep *hwdep)
 {
-	kfree(container_of(dev, struct snd_hwdep, dev));
+	if (!hwdep)
+		return;
+	if (hwdep->private_free)
+		hwdep->private_free(hwdep);
+	put_device(hwdep->dev);
+	kfree(hwdep);
 }
 
 /**
@@ -379,18 +385,22 @@ int snd_hwdep_new(struct snd_card *card, char *id, int device,
 	hwdep->card = card;
 	hwdep->device = device;
 	if (id)
-		strlcpy(hwdep->id, id, sizeof(hwdep->id));
+		strscpy(hwdep->id, id, sizeof(hwdep->id));
 
-	snd_device_initialize(&hwdep->dev, card);
-	hwdep->dev.release = release_hwdep_device;
-	dev_set_name(&hwdep->dev, "hwC%iD%i", card->number, device);
+	err = snd_device_alloc(&hwdep->dev, card);
+	if (err < 0) {
+		snd_hwdep_free(hwdep);
+		return err;
+	}
+
+	dev_set_name(hwdep->dev, "hwC%iD%i", card->number, device);
 #ifdef CONFIG_SND_OSSEMUL
 	hwdep->oss_type = -1;
 #endif
 
 	err = snd_device_new(card, SNDRV_DEV_HWDEP, hwdep, &ops);
 	if (err < 0) {
-		put_device(&hwdep->dev);
+		snd_hwdep_free(hwdep);
 		return err;
 	}
 
@@ -402,12 +412,7 @@ EXPORT_SYMBOL(snd_hwdep_new);
 
 static int snd_hwdep_dev_free(struct snd_device *device)
 {
-	struct snd_hwdep *hwdep = device->device_data;
-	if (!hwdep)
-		return 0;
-	if (hwdep->private_free)
-		hwdep->private_free(hwdep);
-	put_device(&hwdep->dev);
+	snd_hwdep_free(device->device_data);
 	return 0;
 }
 
@@ -425,9 +430,9 @@ static int snd_hwdep_dev_register(struct snd_device *device)
 	list_add_tail(&hwdep->list, &snd_hwdep_devices);
 	err = snd_register_device(SNDRV_DEVICE_TYPE_HWDEP,
 				  hwdep->card, hwdep->device,
-				  &snd_hwdep_f_ops, hwdep, &hwdep->dev);
+				  &snd_hwdep_f_ops, hwdep, hwdep->dev);
 	if (err < 0) {
-		dev_err(&hwdep->dev, "unable to register\n");
+		dev_err(hwdep->dev, "unable to register\n");
 		list_del(&hwdep->list);
 		mutex_unlock(&register_mutex);
 		return err;
@@ -438,12 +443,12 @@ static int snd_hwdep_dev_register(struct snd_device *device)
 	if (hwdep->oss_type >= 0) {
 		if (hwdep->oss_type == SNDRV_OSS_DEVICE_TYPE_DMFM &&
 		    hwdep->device)
-			dev_warn(&hwdep->dev,
+			dev_warn(hwdep->dev,
 				 "only hwdep device 0 can be registered as OSS direct FM device!\n");
 		else if (snd_register_oss_device(hwdep->oss_type,
 						 card, hwdep->device,
 						 &snd_hwdep_f_ops, hwdep) < 0)
-			dev_warn(&hwdep->dev,
+			dev_warn(hwdep->dev,
 				 "unable to register OSS compatibility device\n");
 		else
 			hwdep->ossreg = 1;
@@ -470,7 +475,7 @@ static int snd_hwdep_dev_disconnect(struct snd_device *device)
 	if (hwdep->ossreg)
 		snd_unregister_oss_device(hwdep->oss_type, hwdep->card, hwdep->device);
 #endif
-	snd_unregister_device(&hwdep->dev);
+	snd_unregister_device(hwdep->dev);
 	list_del_init(&hwdep->list);
 	mutex_unlock(&hwdep->open_mutex);
 	mutex_unlock(&register_mutex);
@@ -500,7 +505,8 @@ static void __init snd_hwdep_proc_init(void)
 {
 	struct snd_info_entry *entry;
 
-	if ((entry = snd_info_create_module_entry(THIS_MODULE, "hwdep", NULL)) != NULL) {
+	entry = snd_info_create_module_entry(THIS_MODULE, "hwdep", NULL);
+	if (entry) {
 		entry->c.text.read = snd_hwdep_proc_read;
 		if (snd_info_register(entry) < 0) {
 			snd_info_free_entry(entry);

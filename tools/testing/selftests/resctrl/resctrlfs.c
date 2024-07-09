@@ -8,9 +8,9 @@
  *    Sai Praneeth Prakhya <sai.praneeth.prakhya@intel.com>,
  *    Fenghua Yu <fenghua.yu@intel.com>
  */
-#include "resctrl.h"
+#include <limits.h>
 
-int tests_run;
+#include "resctrl.h"
 
 static int find_resctrl_mount(char *buffer)
 {
@@ -49,50 +49,42 @@ static int find_resctrl_mount(char *buffer)
 	return -ENOENT;
 }
 
-char cbm_mask[256];
-
 /*
- * remount_resctrlfs - Remount resctrl FS at /sys/fs/resctrl
- * @mum_resctrlfs:	Should the resctrl FS be remounted?
+ * mount_resctrlfs - Mount resctrl FS at /sys/fs/resctrl
  *
- * If not mounted, mount it.
- * If mounted and mum_resctrlfs then remount resctrl FS.
- * If mounted and !mum_resctrlfs then noop
+ * Mounts resctrl FS. Fails if resctrl FS is already mounted to avoid
+ * pre-existing settings interfering with the test results.
  *
  * Return: 0 on success, non-zero on failure
  */
-int remount_resctrlfs(bool mum_resctrlfs)
+int mount_resctrlfs(void)
 {
-	char mountpoint[256];
 	int ret;
 
-	ret = find_resctrl_mount(mountpoint);
-	if (ret)
-		strcpy(mountpoint, RESCTRL_PATH);
+	ret = find_resctrl_mount(NULL);
+	if (ret != -ENOENT)
+		return -1;
 
-	if (!ret && mum_resctrlfs && umount(mountpoint)) {
-		printf("not ok unmounting \"%s\"\n", mountpoint);
-		perror("# umount");
-		tests_run++;
-	}
-
-	if (!ret && !mum_resctrlfs)
-		return 0;
-
+	ksft_print_msg("Mounting resctrl to \"%s\"\n", RESCTRL_PATH);
 	ret = mount("resctrl", RESCTRL_PATH, "resctrl", 0, NULL);
-	printf("%sok mounting resctrl to \"%s\"\n", ret ? "not " : "",
-	       RESCTRL_PATH);
 	if (ret)
 		perror("# mount");
-
-	tests_run++;
 
 	return ret;
 }
 
 int umount_resctrlfs(void)
 {
-	if (umount(RESCTRL_PATH)) {
+	char mountpoint[256];
+	int ret;
+
+	ret = find_resctrl_mount(mountpoint);
+	if (ret == -ENOENT)
+		return 0;
+	if (ret)
+		return ret;
+
+	if (umount(mountpoint)) {
 		perror("# Unable to umount resctrl");
 
 		return errno;
@@ -113,7 +105,7 @@ int get_resource_id(int cpu_no, int *resource_id)
 	char phys_pkg_path[1024];
 	FILE *fp;
 
-	if (is_amd)
+	if (get_vendor() == ARCH_AMD)
 		sprintf(phys_pkg_path, "%s%d/cache/index3/id",
 			PHYS_ID_PATH, cpu_no);
 	else
@@ -205,17 +197,19 @@ int get_cache_size(int cpu_no, char *cache_type, unsigned long *cache_size)
 /*
  * get_cbm_mask - Get cbm mask for given cache
  * @cache_type:	Cache level L2/L3
- *
- * Mask is stored in cbm_mask which is global variable.
+ * @cbm_mask:	cbm_mask returned as a string
  *
  * Return: = 0 on success, < 0 on failure.
  */
-int get_cbm_mask(char *cache_type)
+int get_cbm_mask(char *cache_type, char *cbm_mask)
 {
 	char cbm_mask_path[1024];
 	FILE *fp;
 
-	sprintf(cbm_mask_path, "%s/%s/cbm_mask", CBM_MASK_PATH, cache_type);
+	if (!cbm_mask)
+		return -1;
+
+	sprintf(cbm_mask_path, "%s/%s/cbm_mask", INFO_PATH, cache_type);
 
 	fp = fopen(cbm_mask_path, "r");
 	if (!fp) {
@@ -268,7 +262,7 @@ int get_core_sibling(int cpu_no)
 	while (token) {
 		sibling_cpu_no = atoi(token);
 		/* Skipping core 0 as we don't want to run test on core 0 */
-		if (sibling_cpu_no != 0)
+		if (sibling_cpu_no != 0 && sibling_cpu_no != cpu_no)
 			break;
 		token = strtok(NULL, "-,");
 	}
@@ -310,10 +304,10 @@ int taskset_benchmark(pid_t bm_pid, int cpu_no)
  */
 void run_benchmark(int signum, siginfo_t *info, void *ucontext)
 {
-	int operation, ret, malloc_and_init_memory, memflush;
-	unsigned long span, buffer_span;
+	int operation, ret, memflush;
 	char **benchmark_cmd;
-	char resctrl_val[64];
+	size_t span;
+	bool once;
 	FILE *fp;
 
 	benchmark_cmd = info->si_ptr;
@@ -329,18 +323,16 @@ void run_benchmark(int signum, siginfo_t *info, void *ucontext)
 	if (strcmp(benchmark_cmd[0], "fill_buf") == 0) {
 		/* Execute default fill_buf benchmark */
 		span = strtoul(benchmark_cmd[1], NULL, 10);
-		malloc_and_init_memory = atoi(benchmark_cmd[2]);
-		memflush =  atoi(benchmark_cmd[3]);
-		operation = atoi(benchmark_cmd[4]);
-		sprintf(resctrl_val, "%s", benchmark_cmd[5]);
-
-		if (strcmp(resctrl_val, "cqm") != 0)
-			buffer_span = span * MB;
+		memflush =  atoi(benchmark_cmd[2]);
+		operation = atoi(benchmark_cmd[3]);
+		if (!strcmp(benchmark_cmd[4], "true"))
+			once = true;
+		else if (!strcmp(benchmark_cmd[4], "false"))
+			once = false;
 		else
-			buffer_span = span;
+			PARENT_EXIT("Invalid once parameter");
 
-		if (run_fill_buf(buffer_span, malloc_and_init_memory, memflush,
-				 operation, resctrl_val))
+		if (run_fill_buf(span, memflush, operation, once))
 			fprintf(stderr, "Error in running fill buffer\n");
 	} else {
 		/* Execute specified benchmark */
@@ -458,9 +450,9 @@ int write_bm_pid_to_resctrl(pid_t bm_pid, char *ctrlgrp, char *mongrp,
 	if (ret)
 		goto out;
 
-	/* Create mon grp and write pid into it for "mbm" and "cqm" test */
-	if ((strcmp(resctrl_val, "cqm") == 0) ||
-	    (strcmp(resctrl_val, "mbm") == 0)) {
+	/* Create mon grp and write pid into it for "mbm" and "cmt" test */
+	if (!strncmp(resctrl_val, CMT_STR, sizeof(CMT_STR)) ||
+	    !strncmp(resctrl_val, MBM_STR, sizeof(MBM_STR))) {
 		if (strlen(mongrp)) {
 			sprintf(monitorgroup_p, "%s/mon_groups", controlgroup);
 			sprintf(monitorgroup, "%s/%s", monitorgroup_p, mongrp);
@@ -477,12 +469,9 @@ int write_bm_pid_to_resctrl(pid_t bm_pid, char *ctrlgrp, char *mongrp,
 	}
 
 out:
-	printf("%sok writing benchmark parameters to resctrl FS\n",
-	       ret ? "not " : "");
+	ksft_print_msg("Writing benchmark parameters to resctrl FS\n");
 	if (ret)
 		perror("# writing to resctrlfs");
-
-	tests_run++;
 
 	return ret;
 }
@@ -505,13 +494,14 @@ int write_schemata(char *ctrlgrp, char *schemata, int cpu_no, char *resctrl_val)
 	int resource_id, ret = 0;
 	FILE *fp;
 
-	if ((strcmp(resctrl_val, "mba") != 0) &&
-	    (strcmp(resctrl_val, "cat") != 0) &&
-	    (strcmp(resctrl_val, "cqm") != 0))
+	if (strncmp(resctrl_val, MBA_STR, sizeof(MBA_STR)) &&
+	    strncmp(resctrl_val, MBM_STR, sizeof(MBM_STR)) &&
+	    strncmp(resctrl_val, CAT_STR, sizeof(CAT_STR)) &&
+	    strncmp(resctrl_val, CMT_STR, sizeof(CMT_STR)))
 		return -ENOENT;
 
 	if (!schemata) {
-		printf("# Skipping empty schemata update\n");
+		ksft_print_msg("Skipping empty schemata update\n");
 
 		return -1;
 	}
@@ -528,9 +518,11 @@ int write_schemata(char *ctrlgrp, char *schemata, int cpu_no, char *resctrl_val)
 	else
 		sprintf(controlgroup, "%s/schemata", RESCTRL_PATH);
 
-	if (!strcmp(resctrl_val, "cat") || !strcmp(resctrl_val, "cqm"))
+	if (!strncmp(resctrl_val, CAT_STR, sizeof(CAT_STR)) ||
+	    !strncmp(resctrl_val, CMT_STR, sizeof(CMT_STR)))
 		sprintf(schema, "%s%d%c%s", "L3:", resource_id, '=', schemata);
-	if (strcmp(resctrl_val, "mba") == 0)
+	if (!strncmp(resctrl_val, MBA_STR, sizeof(MBA_STR)) ||
+	    !strncmp(resctrl_val, MBM_STR, sizeof(MBM_STR)))
 		sprintf(schema, "%s%d%c%s", "MB:", resource_id, '=', schemata);
 
 	fp = fopen(controlgroup, "w");
@@ -551,10 +543,9 @@ int write_schemata(char *ctrlgrp, char *schemata, int cpu_no, char *resctrl_val)
 	fclose(fp);
 
 out:
-	printf("%sok Write schema \"%s\" to resctrl FS%s%s\n",
-	       ret ? "not " : "", schema, ret ? " # " : "",
-	       ret ? reason : "");
-	tests_run++;
+	ksft_print_msg("Write schema \"%s\" to resctrl FS%s%s\n",
+		       schema, ret ? " # " : "",
+		       ret ? reason : "");
 
 	return ret;
 }
@@ -578,18 +569,20 @@ bool check_resctrlfs_support(void)
 
 	fclose(inf);
 
-	printf("%sok kernel supports resctrl filesystem\n", ret ? "" : "not ");
-	tests_run++;
+	ksft_print_msg("%s Check kernel supports resctrl filesystem\n",
+		       ret ? "Pass:" : "Fail:");
+
+	if (!ret)
+		return ret;
 
 	dp = opendir(RESCTRL_PATH);
-	printf("%sok resctrl mountpoint \"%s\" exists\n",
-	       dp ? "" : "not ", RESCTRL_PATH);
+	ksft_print_msg("%s Check resctrl mountpoint \"%s\" exists\n",
+		       dp ? "Pass:" : "Fail:", RESCTRL_PATH);
 	if (dp)
 		closedir(dp);
-	tests_run++;
 
-	printf("# resctrl filesystem %s mounted\n",
-	       find_resctrl_mount(NULL) ? "not" : "is");
+	ksft_print_msg("resctrl filesystem %s mounted\n",
+		       find_resctrl_mount(NULL) ? "not" : "is");
 
 	return ret;
 }
@@ -613,30 +606,46 @@ char *fgrep(FILE *inf, const char *str)
 
 /*
  * validate_resctrl_feature_request - Check if requested feature is valid.
- * @resctrl_val:	Requested feature
+ * @resource:	Required resource (e.g., MB, L3, L2, L3_MON, etc.)
+ * @feature:	Required monitor feature (in mon_features file). Can only be
+ *		set for L3_MON. Must be NULL for all other resources.
  *
- * Return: 0 on success, non-zero on failure
+ * Return: True if the resource/feature is supported, else false. False is
+ *         also returned if resctrl FS is not mounted.
  */
-bool validate_resctrl_feature_request(char *resctrl_val)
+bool validate_resctrl_feature_request(const char *resource, const char *feature)
 {
-	FILE *inf = fopen("/proc/cpuinfo", "r");
-	bool found = false;
+	char res_path[PATH_MAX];
+	struct stat statbuf;
 	char *res;
+	FILE *inf;
+	int ret;
 
+	if (!resource)
+		return false;
+
+	ret = find_resctrl_mount(NULL);
+	if (ret)
+		return false;
+
+	snprintf(res_path, sizeof(res_path), "%s/%s", INFO_PATH, resource);
+
+	if (stat(res_path, &statbuf))
+		return false;
+
+	if (!feature)
+		return true;
+
+	snprintf(res_path, sizeof(res_path), "%s/%s/mon_features", INFO_PATH, resource);
+	inf = fopen(res_path, "r");
 	if (!inf)
 		return false;
 
-	res = fgrep(inf, "flags");
-
-	if (res) {
-		char *s = strchr(res, ':');
-
-		found = s && !strstr(s, resctrl_val);
-		free(res);
-	}
+	res = fgrep(inf, feature);
+	free(res);
 	fclose(inf);
 
-	return found;
+	return !!res;
 }
 
 int filter_dmesg(void)
@@ -652,6 +661,7 @@ int filter_dmesg(void)
 		perror("pipe");
 		return ret;
 	}
+	fflush(stdout);
 	pid = fork();
 	if (pid == 0) {
 		close(pipefds[0]);
@@ -671,9 +681,9 @@ int filter_dmesg(void)
 
 	while (fgets(line, 1024, fp)) {
 		if (strstr(line, "intel_rdt:"))
-			printf("# dmesg: %s", line);
+			ksft_print_msg("dmesg: %s", line);
 		if (strstr(line, "resctrl:"))
-			printf("# dmesg: %s", line);
+			ksft_print_msg("dmesg: %s", line);
 	}
 	fclose(fp);
 	waitpid(pid, NULL, 0);

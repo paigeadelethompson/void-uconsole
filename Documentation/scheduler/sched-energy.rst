@@ -82,7 +82,7 @@ through the arch_scale_cpu_capacity() callback.
 The rest of platform knowledge used by EAS is directly read from the Energy
 Model (EM) framework. The EM of a platform is composed of a power cost table
 per 'performance domain' in the system (see Documentation/power/energy-model.rst
-for futher details about performance domains).
+for further details about performance domains).
 
 The scheduler manages references to the EM objects in the topology code when the
 scheduling domains are built, or re-built. For each root domain (rd), the
@@ -281,7 +281,7 @@ mechanism called 'over-utilization'.
 From a general standpoint, the use-cases where EAS can help the most are those
 involving a light/medium CPU utilization. Whenever long CPU-bound tasks are
 being run, they will require all of the available CPU capacity, and there isn't
-much that can be done by the scheduler to save energy without severly harming
+much that can be done by the scheduler to save energy without severely harming
 throughput. In order to avoid hurting performance with EAS, CPUs are flagged as
 'over-utilized' as soon as they are used at more than 80% of their compute
 capacity. As long as no CPUs are over-utilized in a root domain, load balancing
@@ -328,7 +328,7 @@ section lists these dependencies and provides hints as to how they can be met.
 
 As mentioned in the introduction, EAS is only supported on platforms with
 asymmetric CPU topologies for now. This requirement is checked at run-time by
-looking for the presence of the SD_ASYM_CPUCAPACITY flag when the scheduling
+looking for the presence of the SD_ASYM_CPUCAPACITY_FULL flag when the scheduling
 domains are built.
 
 See Documentation/scheduler/sched-capacity.rst for requirements to be met for this
@@ -349,6 +349,11 @@ independent EM framework in Documentation/power/energy-model.rst.
 
 Please also note that the scheduling domains need to be re-built after the
 EM has been registered in order to start EAS.
+
+EAS uses the EM to make a forecasting decision on energy usage and thus it is
+more focused on the difference when checking possible options for task
+placement. For EAS it doesn't matter whether the EM power values are expressed
+in milli-Watts or in an 'abstract scale'.
 
 
 6.3 - Energy Model complexity

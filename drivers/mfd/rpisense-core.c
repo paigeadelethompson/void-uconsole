@@ -48,8 +48,7 @@ static void rpisense_client_dev_register(struct rpisense *rpisense,
 	}
 }
 
-static int rpisense_probe(struct i2c_client *i2c,
-			       const struct i2c_device_id *id)
+static int rpisense_probe(struct i2c_client *i2c)
 {
 	int ret;
 	struct rpisense_js *rpisense_js;
@@ -95,12 +94,11 @@ static int rpisense_probe(struct i2c_client *i2c,
 	return 0;
 }
 
-static int rpisense_remove(struct i2c_client *i2c)
+static void rpisense_remove(struct i2c_client *i2c)
 {
 	struct rpisense *rpisense = i2c_get_clientdata(i2c);
 
 	platform_device_unregister(rpisense->joystick.pdev);
-	return 0;
 }
 
 struct rpisense *rpisense_get_dev(void)

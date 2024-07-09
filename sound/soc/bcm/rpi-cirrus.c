@@ -704,10 +704,12 @@ static int rpi_cirrus_hw_params(struct snd_pcm_substream *substream,
 
 	int ret;
 
-	unsigned int width = snd_pcm_format_physical_width(
-		params_format(params));
+	unsigned int width = snd_pcm_format_width(params_format(params));
 	unsigned int rate = params_rate(params);
 	unsigned int clk_freq = calc_sysclk(rate);
+
+	/* Using powers of 2 allows for an integer clock divisor */
+	width = width <= 16 ? 16 : 32;
 
 	mutex_lock(&priv->lock);
 
@@ -904,7 +906,7 @@ static struct snd_soc_dai_link rpi_cirrus_dai[] = {
 				  | SND_SOC_DAIFMT_NB_NF
 				  | SND_SOC_DAIFMT_CBM_CFM,
 		.ignore_suspend = 1,
-		.params		= &rpi_cirrus_dai_link2_params,
+		.c2c_params	= &rpi_cirrus_dai_link2_params,
 		.init		= rpi_cirrus_init_wm8804,
 		SND_SOC_DAILINK_REG(wm8804),
 	},

@@ -8,7 +8,6 @@
 #include <linux/leds.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 
@@ -135,7 +134,7 @@ static const struct regmap_config tlc591xx_regmap = {
 	.max_register = 0x1e,
 };
 
-static const struct of_device_id of_tlc591xx_leds_match[] = {
+static const struct of_device_id of_tlc591xx_leds_match[] __maybe_unused = {
 	{ .compatible = "ti,tlc59116",
 	  .data = &tlc59116 },
 	{ .compatible = "ti,tlc59108",
@@ -145,17 +144,20 @@ static const struct of_device_id of_tlc591xx_leds_match[] = {
 MODULE_DEVICE_TABLE(of, of_tlc591xx_leds_match);
 
 static int
-tlc591xx_probe(struct i2c_client *client,
-	       const struct i2c_device_id *id)
+tlc591xx_probe(struct i2c_client *client)
 {
-	struct device_node *np = dev_of_node(&client->dev), *child;
+	struct device_node *np, *child;
 	struct device *dev = &client->dev;
 	const struct tlc591xx *tlc591xx;
 	struct tlc591xx_priv *priv;
 	int err, count, reg;
 
-	tlc591xx = device_get_match_data(dev);
+	np = dev_of_node(dev);
 	if (!np)
+		return -ENODEV;
+
+	tlc591xx = device_get_match_data(dev);
+	if (!tlc591xx)
 		return -ENODEV;
 
 	count = of_get_available_child_count(np);

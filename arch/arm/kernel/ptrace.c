@@ -22,9 +22,9 @@
 #include <linux/hw_breakpoint.h>
 #include <linux/regset.h>
 #include <linux/audit.h>
-#include <linux/tracehook.h>
 #include <linux/unistd.h>
 
+#include <asm/syscall.h>
 #include <asm/traps.h>
 
 #define CREATE_TRACE_POINTS
@@ -318,32 +318,6 @@ static int ptrace_setwmmxregs(struct task_struct *tsk, void __user *ufp)
 
 #endif
 
-#ifdef CONFIG_CRUNCH
-/*
- * Get the child Crunch state.
- */
-static int ptrace_getcrunchregs(struct task_struct *tsk, void __user *ufp)
-{
-	struct thread_info *thread = task_thread_info(tsk);
-
-	crunch_task_disable(thread);  /* force it to ram */
-	return copy_to_user(ufp, &thread->crunchstate, CRUNCH_SIZE)
-		? -EFAULT : 0;
-}
-
-/*
- * Set the child Crunch state.
- */
-static int ptrace_setcrunchregs(struct task_struct *tsk, void __user *ufp)
-{
-	struct thread_info *thread = task_thread_info(tsk);
-
-	crunch_task_release(thread);  /* force a reload */
-	return copy_from_user(&thread->crunchstate, ufp, CRUNCH_SIZE)
-		? -EFAULT : 0;
-}
-#endif
-
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
 /*
  * Convert a virtual register number into an index for a thread_info
@@ -610,8 +584,6 @@ static int fpa_set(struct task_struct *target,
 {
 	struct thread_info *thread = task_thread_info(target);
 
-	thread->used_cp[1] = thread->used_cp[2] = 1;
-
 	return user_regset_copyin(&pos, &count, &kbuf, &ubuf,
 		&thread->fpstate,
 		0, sizeof(struct user_fp));
@@ -677,11 +649,9 @@ static int vfp_set(struct task_struct *target,
 	if (ret)
 		return ret;
 
-	ret = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-				user_fpregs_offset + sizeof(new_vfp.fpregs),
-				user_fpscr_offset);
-	if (ret)
-		return ret;
+	user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
+				  user_fpregs_offset + sizeof(new_vfp.fpregs),
+				  user_fpscr_offset);
 
 	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
 				 &new_vfp.fpscr,
@@ -811,19 +781,11 @@ long arch_ptrace(struct task_struct *child, long request,
 			break;
 
 		case PTRACE_SET_SYSCALL:
-			task_thread_info(child)->syscall = data;
+			if (data != -1)
+				data &= __NR_SYSCALL_MASK;
+			task_thread_info(child)->abi_syscall = data;
 			ret = 0;
 			break;
-
-#ifdef CONFIG_CRUNCH
-		case PTRACE_GETCRUNCHREGS:
-			ret = ptrace_getcrunchregs(child, datap);
-			break;
-
-		case PTRACE_SETCRUNCHREGS:
-			ret = ptrace_setcrunchregs(child, datap);
-			break;
-#endif
 
 #ifdef CONFIG_VFP
 		case PTRACE_GETVFPREGS:
@@ -865,8 +827,7 @@ enum ptrace_syscall_dir {
 	PTRACE_SYSCALL_EXIT,
 };
 
-static void tracehook_report_syscall(struct pt_regs *regs,
-				    enum ptrace_syscall_dir dir)
+static void report_syscall(struct pt_regs *regs, enum ptrace_syscall_dir dir)
 {
 	unsigned long ip;
 
@@ -878,19 +839,19 @@ static void tracehook_report_syscall(struct pt_regs *regs,
 	regs->ARM_ip = dir;
 
 	if (dir == PTRACE_SYSCALL_EXIT)
-		tracehook_report_syscall_exit(regs, 0);
-	else if (tracehook_report_syscall_entry(regs))
-		current_thread_info()->syscall = -1;
+		ptrace_report_syscall_exit(regs, 0);
+	else if (ptrace_report_syscall_entry(regs))
+		current_thread_info()->abi_syscall = -1;
 
 	regs->ARM_ip = ip;
 }
 
-asmlinkage int syscall_trace_enter(struct pt_regs *regs, int scno)
+asmlinkage int syscall_trace_enter(struct pt_regs *regs)
 {
-	current_thread_info()->syscall = scno;
+	int scno;
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
-		tracehook_report_syscall(regs, PTRACE_SYSCALL_ENTER);
+		report_syscall(regs, PTRACE_SYSCALL_ENTER);
 
 	/* Do seccomp after ptrace; syscall may have changed. */
 #ifdef CONFIG_HAVE_ARCH_SECCOMP_FILTER
@@ -898,11 +859,11 @@ asmlinkage int syscall_trace_enter(struct pt_regs *regs, int scno)
 		return -1;
 #else
 	/* XXX: remove this once OABI gets fixed */
-	secure_computing_strict(current_thread_info()->syscall);
+	secure_computing_strict(syscall_get_nr(current, regs));
 #endif
 
 	/* Tracer or seccomp may have changed syscall. */
-	scno = current_thread_info()->syscall;
+	scno = syscall_get_nr(current, regs);
 
 	if (test_thread_flag(TIF_SYSCALL_TRACEPOINT))
 		trace_sys_enter(regs, scno);
@@ -931,5 +892,5 @@ asmlinkage void syscall_trace_exit(struct pt_regs *regs)
 		trace_sys_exit(regs, regs_return_value(regs));
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
-		tracehook_report_syscall(regs, PTRACE_SYSCALL_EXIT);
+		report_syscall(regs, PTRACE_SYSCALL_EXIT);
 }

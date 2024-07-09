@@ -275,7 +275,7 @@ static int ipoib_mcast_join_finish(struct ipoib_mcast *mcast,
 
 	memset(&av, 0, sizeof(av));
 	av.type = rdma_ah_find_type(priv->ca, priv->port);
-	rdma_ah_set_dlid(&av, be16_to_cpu(mcast->mcmember.mlid)),
+	rdma_ah_set_dlid(&av, be16_to_cpu(mcast->mcmember.mlid));
 	rdma_ah_set_port_num(&av, priv->port);
 	rdma_ah_set_sl(&av, mcast->mcmember.sl);
 	rdma_ah_set_static_rate(&av, mcast->mcmember.rate);
@@ -333,15 +333,6 @@ void ipoib_mcast_carrier_on_task(struct work_struct *work)
 		ipoib_dbg(priv, "Keeping carrier off until IB port is active\n");
 		return;
 	}
-	/*
-	 * Check if can send sendonly MCG's with sendonly-fullmember join state.
-	 * It done here after the successfully join to the broadcast group,
-	 * because the broadcast group must always be joined first and is always
-	 * re-joined if the SM changes substantially.
-	 */
-	priv->sm_fullmember_sendonly_support =
-		ib_sa_sendonly_fullmem_support(&ipoib_sa_client,
-					       priv->ca, priv->port);
 	/*
 	 * Take rtnl_lock to avoid racing with ipoib_stop() and
 	 * turning the carrier back on while a device is being
@@ -537,26 +528,21 @@ static int ipoib_mcast_join(struct net_device *dev, struct ipoib_mcast *mcast)
 		 * most closely emulates the behavior, from a user space
 		 * application perspective, of Ethernet multicast operation.
 		 */
-		if (test_bit(IPOIB_MCAST_FLAG_SENDONLY, &mcast->flags) &&
-		    priv->sm_fullmember_sendonly_support)
-			/* SM supports sendonly-fullmember, otherwise fallback to full-member */
+		if (test_bit(IPOIB_MCAST_FLAG_SENDONLY, &mcast->flags))
 			rec.join_state = SENDONLY_FULLMEMBER_JOIN;
 	}
-	spin_unlock_irq(&priv->lock);
 
 	multicast = ib_sa_join_multicast(&ipoib_sa_client, priv->ca, priv->port,
-					 &rec, comp_mask, GFP_KERNEL,
+					 &rec, comp_mask, GFP_ATOMIC,
 					 ipoib_mcast_join_complete, mcast);
-	spin_lock_irq(&priv->lock);
 	if (IS_ERR(multicast)) {
 		ret = PTR_ERR(multicast);
 		ipoib_warn(priv, "ib_sa_join_multicast failed, status %d\n", ret);
 		/* Requeue this join task with a backoff delay */
 		__ipoib_mcast_schedule_join_thread(priv, mcast, 1);
 		clear_bit(IPOIB_MCAST_FLAG_BUSY, &mcast->flags);
-		spin_unlock_irq(&priv->lock);
 		complete(&mcast->done);
-		spin_lock_irq(&priv->lock);
+		return ret;
 	}
 	return 0;
 }

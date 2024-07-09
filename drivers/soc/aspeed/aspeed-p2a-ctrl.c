@@ -18,8 +18,8 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/of.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
@@ -110,7 +110,7 @@ static int aspeed_p2a_mmap(struct file *file, struct vm_area_struct *vma)
 	vsize = vma->vm_end - vma->vm_start;
 	prot = vma->vm_page_prot;
 
-	if (vma->vm_pgoff + vsize > ctrl->mem_base + ctrl->mem_size)
+	if (vma->vm_pgoff + vma_pages(vma) > ctrl->mem_size >> PAGE_SHIFT)
 		return -EINVAL;
 
 	/* ast2400/2500 AHB accesses are not cache coherent */

@@ -774,7 +774,7 @@ speed = "LOW"; break; default:
 				     speed;}
 		   )) ;
 	DWC_PRINTF("  Max packet size: %d\n",
-		   usb_maxpacket(urb->dev, urb->pipe, usb_pipeout(urb->pipe)));
+		   usb_maxpacket(urb->dev, urb->pipe);
 	DWC_PRINTF("  Data buffer length: %d\n", urb->transfer_buffer_length);
 	DWC_PRINTF("  Transfer buffer: %p, Transfer DMA: %p\n",
 		   urb->transfer_buffer, (void *)urb->transfer_dma);
@@ -807,7 +807,6 @@ static int dwc_otg_urb_enqueue(struct usb_hcd *hcd,
 	struct usb_host_endpoint *ep = urb->ep;
 #endif
 	dwc_irqflags_t irqflags;
-        void **ref_ep_hcpriv = &ep->hcpriv;
 	dwc_otg_hcd_t *dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
 	dwc_otg_hcd_urb_t *dwc_otg_urb;
 	int i;
@@ -824,7 +823,7 @@ static int dwc_otg_urb_enqueue(struct usb_hcd *hcd,
 	if ((usb_pipetype(urb->pipe) == PIPE_ISOCHRONOUS)
 	    || (usb_pipetype(urb->pipe) == PIPE_INTERRUPT)) {
 		if (!dwc_otg_hcd_is_bandwidth_allocated
-		    (dwc_otg_hcd, ref_ep_hcpriv)) {
+		    (dwc_otg_hcd, ep->hcpriv)) {
 			alloc_bandwidth = 1;
 		}
 	}
@@ -860,8 +859,7 @@ static int dwc_otg_urb_enqueue(struct usb_hcd *hcd,
 	dwc_otg_hcd_urb_set_pipeinfo(dwc_otg_urb, usb_pipedevice(urb->pipe),
 				     usb_pipeendpoint(urb->pipe), ep_type,
 				     usb_pipein(urb->pipe),
-				     usb_maxpacket(urb->dev, urb->pipe,
-						   !(usb_pipein(urb->pipe))));
+				     usb_maxpacket(urb->dev, urb->pipe));
 
 	buf = urb->transfer_buffer;
 	if (hcd_uses_dma(hcd) && !buf && urb->transfer_buffer_length) {
@@ -911,13 +909,12 @@ static int dwc_otg_urb_enqueue(struct usb_hcd *hcd,
 #endif
 	{
 		retval = dwc_otg_hcd_urb_enqueue(dwc_otg_hcd, dwc_otg_urb,
-						/*(dwc_otg_qh_t **)*/
-						ref_ep_hcpriv, 1);
+						&ep->hcpriv, 1);
 		if (0 == retval) {
 			if (alloc_bandwidth) {
 				allocate_bus_bandwidth(hcd,
 						dwc_otg_hcd_get_ep_bandwidth(
-							dwc_otg_hcd, *ref_ep_hcpriv),
+							dwc_otg_hcd, ep->hcpriv),
 						urb);
 			}
 		} else {
@@ -1026,7 +1023,8 @@ static void endpoint_reset(struct usb_hcd *hcd, struct usb_host_endpoint *ep)
 	dwc_irqflags_t flags;
 	dwc_otg_hcd_t *dwc_otg_hcd = hcd_to_dwc_otg_hcd(hcd);
 
-	DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD EP RESET: Endpoint Num=0x%02d\n", epnum);
+	DWC_DEBUGPL(DBG_HCD, "DWC OTG HCD EP RESET: Endpoint Num=0x%02d\n",
+		    ep->desc.bEndpointAddress);
 
 	DWC_SPINLOCK_IRQSAVE(dwc_otg_hcd->lock, &flags);
 	if (ep->hcpriv) {

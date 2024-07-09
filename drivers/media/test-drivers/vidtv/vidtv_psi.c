@@ -19,7 +19,6 @@
 #include <linux/ratelimit.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-#include <linux/string.h>
 #include <linux/time.h>
 #include <linux/types.h>
 
@@ -95,34 +94,28 @@ static void vidtv_psi_update_version_num(struct vidtv_psi_table_header *h)
 static u16 vidtv_psi_get_sec_len(struct vidtv_psi_table_header *h)
 {
 	u16 mask;
-	u16 ret;
 
 	mask = GENMASK(11, 0);
 
-	ret = be16_to_cpu(h->bitfield) & mask;
-	return ret;
+	return be16_to_cpu(h->bitfield) & mask;
 }
 
 u16 vidtv_psi_get_pat_program_pid(struct vidtv_psi_table_pat_program *p)
 {
 	u16 mask;
-	u16 ret;
 
 	mask = GENMASK(12, 0);
 
-	ret = be16_to_cpu(p->bitfield) & mask;
-	return ret;
+	return be16_to_cpu(p->bitfield) & mask;
 }
 
 u16 vidtv_psi_pmt_stream_get_elem_pid(struct vidtv_psi_table_pmt_stream *s)
 {
 	u16 mask;
-	u16 ret;
 
 	mask = GENMASK(12, 0);
 
-	ret = be16_to_cpu(s->bitfield) & mask;
-	return ret;
+	return be16_to_cpu(s->bitfield) & mask;
 }
 
 static void vidtv_psi_set_desc_loop_len(__be16 *bitfield, u16 new_len,
@@ -308,16 +301,29 @@ struct vidtv_psi_desc_service *vidtv_psi_service_desc_init(struct vidtv_psi_desc
 
 	desc->service_name_len = service_name_len;
 
-	if (service_name && service_name_len)
+	if (service_name && service_name_len) {
 		desc->service_name = kstrdup(service_name, GFP_KERNEL);
+		if (!desc->service_name)
+			goto free_desc;
+	}
 
 	desc->provider_name_len = provider_name_len;
 
-	if (provider_name && provider_name_len)
+	if (provider_name && provider_name_len) {
 		desc->provider_name = kstrdup(provider_name, GFP_KERNEL);
+		if (!desc->provider_name)
+			goto free_desc_service_name;
+	}
 
 	vidtv_psi_desc_chain(head, (struct vidtv_psi_desc *)desc);
 	return desc;
+
+free_desc_service_name:
+	if (service_name && service_name_len)
+		kfree(desc->service_name);
+free_desc:
+	kfree(desc);
+	return NULL;
 }
 
 struct vidtv_psi_desc_registration
@@ -362,8 +368,13 @@ struct vidtv_psi_desc_network_name
 
 	desc->length = network_name_len;
 
-	if (network_name && network_name_len)
+	if (network_name && network_name_len) {
 		desc->network_name = kstrdup(network_name, GFP_KERNEL);
+		if (!desc->network_name) {
+			kfree(desc);
+			return NULL;
+		}
+	}
 
 	vidtv_psi_desc_chain(head, (struct vidtv_psi_desc *)desc);
 	return desc;
@@ -449,15 +460,32 @@ struct vidtv_psi_desc_short_event
 		iso_language_code = "eng";
 
 	desc->iso_language_code = kstrdup(iso_language_code, GFP_KERNEL);
+	if (!desc->iso_language_code)
+		goto free_desc;
 
-	if (event_name && event_name_len)
+	if (event_name && event_name_len) {
 		desc->event_name = kstrdup(event_name, GFP_KERNEL);
+		if (!desc->event_name)
+			goto free_desc_language_code;
+	}
 
-	if (text && text_len)
+	if (text && text_len) {
 		desc->text = kstrdup(text, GFP_KERNEL);
+		if (!desc->text)
+			goto free_desc_event_name;
+	}
 
 	vidtv_psi_desc_chain(head, (struct vidtv_psi_desc *)desc);
 	return desc;
+
+free_desc_event_name:
+	if (event_name && event_name_len)
+		kfree(desc->event_name);
+free_desc_language_code:
+	kfree(desc->iso_language_code);
+free_desc:
+	kfree(desc);
+	return NULL;
 }
 
 struct vidtv_psi_desc *vidtv_psi_desc_clone(struct vidtv_psi_desc *desc)
@@ -506,10 +534,9 @@ struct vidtv_psi_desc *vidtv_psi_desc_clone(struct vidtv_psi_desc *desc)
 
 		case REGISTRATION_DESCRIPTOR:
 		default:
-			curr = kzalloc(sizeof(*desc) + desc->length, GFP_KERNEL);
+			curr = kmemdup(desc, sizeof(*desc) + desc->length, GFP_KERNEL);
 			if (!curr)
 				return NULL;
-			memcpy(curr, desc, sizeof(*desc) + desc->length);
 		}
 
 		if (!curr)
@@ -1164,6 +1191,8 @@ u32 vidtv_psi_pmt_write_into(struct vidtv_psi_pmt_write_args *args)
 	struct vidtv_psi_desc *table_descriptor   = args->pmt->descriptor;
 	struct vidtv_psi_table_pmt_stream *stream = args->pmt->stream;
 	struct vidtv_psi_desc *stream_descriptor;
+	u32 crc = INITIAL_CRC;
+	u32 nbytes = 0;
 	struct header_write_args h_args = {
 		.dest_buf           = args->buf,
 		.dest_offset        = args->offset,
@@ -1181,6 +1210,7 @@ u32 vidtv_psi_pmt_write_into(struct vidtv_psi_pmt_write_args *args)
 		.new_psi_section    = false,
 		.is_crc             = false,
 		.dest_buf_sz        = args->buf_sz,
+		.crc                = &crc,
 	};
 	struct desc_write_args d_args   = {
 		.dest_buf           = args->buf,
@@ -1193,8 +1223,6 @@ u32 vidtv_psi_pmt_write_into(struct vidtv_psi_pmt_write_args *args)
 		.pid                = args->pid,
 		.dest_buf_sz        = args->buf_sz,
 	};
-	u32 crc = INITIAL_CRC;
-	u32 nbytes = 0;
 
 	vidtv_psi_pmt_table_update_sec_len(args->pmt);
 
@@ -1947,7 +1975,7 @@ u32 vidtv_psi_eit_write_into(struct vidtv_psi_eit_write_args *args)
 struct vidtv_psi_table_eit_event
 *vidtv_psi_eit_event_init(struct vidtv_psi_table_eit_event *head, u16 event_id)
 {
-	const u8 DURATION[] = {0x23, 0x59, 0x59}; /* BCD encoded */
+	static const u8 DURATION[] = {0x23, 0x59, 0x59}; /* BCD encoded */
 	struct vidtv_psi_table_eit_event *e;
 	struct timespec64 ts;
 	struct tm time;

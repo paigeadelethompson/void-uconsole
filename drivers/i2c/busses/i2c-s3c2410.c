@@ -115,9 +115,6 @@ struct s3c24xx_i2c {
 	struct s3c2410_platform_i2c	*pdata;
 	struct gpio_desc	*gpios[2];
 	struct pinctrl          *pctrl;
-#if defined(CONFIG_ARM_S3C24XX_CPUFREQ)
-	struct notifier_block	freq_transition;
-#endif
 	struct regmap		*sysreg;
 	unsigned int		sys_i2c_cfg;
 };
@@ -156,12 +153,8 @@ MODULE_DEVICE_TABLE(of, s3c24xx_i2c_match);
  */
 static inline kernel_ulong_t s3c24xx_get_device_quirks(struct platform_device *pdev)
 {
-	if (pdev->dev.of_node) {
-		const struct of_device_id *match;
-
-		match = of_match_node(s3c24xx_i2c_match, pdev->dev.of_node);
-		return (kernel_ulong_t)match->data;
-	}
+	if (pdev->dev.of_node)
+		return (kernel_ulong_t)of_device_get_match_data(&pdev->dev);
 
 	return platform_get_device_id(pdev)->driver_data;
 }
@@ -223,8 +216,17 @@ static bool is_ack(struct s3c24xx_i2c *i2c)
 	int tries;
 
 	for (tries = 50; tries; --tries) {
-		if (readl(i2c->regs + S3C2410_IICCON)
-			& S3C2410_IICCON_IRQPEND) {
+		unsigned long tmp = readl(i2c->regs + S3C2410_IICCON);
+
+		if (!(tmp & S3C2410_IICCON_ACKEN)) {
+			/*
+			 * Wait a bit for the bus to stabilize,
+			 * delay estimated experimentally.
+			 */
+			usleep_range(100, 200);
+			return true;
+		}
+		if (tmp & S3C2410_IICCON_IRQPEND) {
 			if (!(readl(i2c->regs + S3C2410_IICSTAT)
 				& S3C2410_IICSTAT_LASTBIT))
 				return true;
@@ -277,16 +279,6 @@ static void s3c24xx_i2c_message_start(struct s3c24xx_i2c *i2c,
 
 	stat |= S3C2410_IICSTAT_START;
 	writel(stat, i2c->regs + S3C2410_IICSTAT);
-
-	if (i2c->quirks & QUIRK_POLL) {
-		while ((i2c->msg_num != 0) && is_ack(i2c)) {
-			i2c_s3c_irq_nextbyte(i2c, stat);
-			stat = readl(i2c->regs + S3C2410_IICSTAT);
-
-			if (stat & S3C2410_IICSTAT_ARBITR)
-				dev_err(i2c->dev, "deal with arbitration loss\n");
-		}
-	}
 }
 
 static inline void s3c24xx_i2c_stop(struct s3c24xx_i2c *i2c, int ret)
@@ -483,7 +475,10 @@ static int i2c_s3c_irq_nextbyte(struct s3c24xx_i2c *i2c, unsigned long iicstat)
 					 * forces us to send a new START
 					 * when we change direction
 					 */
+					dev_dbg(i2c->dev,
+						"missing START before write->read\n");
 					s3c24xx_i2c_stop(i2c, -EINVAL);
+					break;
 				}
 
 				goto retry_write;
@@ -690,7 +685,7 @@ static void s3c24xx_i2c_wait_idle(struct s3c24xx_i2c *i2c)
 static int s3c24xx_i2c_doxfer(struct s3c24xx_i2c *i2c,
 			      struct i2c_msg *msgs, int num)
 {
-	unsigned long timeout;
+	unsigned long timeout = 0;
 	int ret;
 
 	ret = s3c24xx_i2c_set_master(i2c);
@@ -710,15 +705,18 @@ static int s3c24xx_i2c_doxfer(struct s3c24xx_i2c *i2c,
 	s3c24xx_i2c_message_start(i2c, msgs);
 
 	if (i2c->quirks & QUIRK_POLL) {
-		ret = i2c->msg_idx;
+		while ((i2c->msg_num != 0) && is_ack(i2c)) {
+			unsigned long stat = readl(i2c->regs + S3C2410_IICSTAT);
 
-		if (ret != num)
-			dev_dbg(i2c->dev, "incomplete xfer (%d)\n", ret);
+			i2c_s3c_irq_nextbyte(i2c, stat);
 
-		goto out;
+			stat = readl(i2c->regs + S3C2410_IICSTAT);
+			if (stat & S3C2410_IICSTAT_ARBITR)
+				dev_err(i2c->dev, "deal with arbitration loss\n");
+		}
+	} else {
+		timeout = wait_event_timeout(i2c->wait, i2c->msg_num == 0, HZ * 5);
 	}
-
-	timeout = wait_event_timeout(i2c->wait, i2c->msg_num == 0, HZ * 5);
 
 	ret = i2c->msg_idx;
 
@@ -781,7 +779,7 @@ static int s3c24xx_i2c_xfer(struct i2c_adapter *adap,
 /* declare our i2c functionality */
 static u32 s3c24xx_i2c_func(struct i2c_adapter *adap)
 {
-	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL | I2C_FUNC_NOSTART |
+	return I2C_FUNC_I2C | I2C_FUNC_SMBUS_EMUL_ALL | I2C_FUNC_NOSTART |
 		I2C_FUNC_PROTOCOL_MANGLING;
 }
 
@@ -884,65 +882,6 @@ static int s3c24xx_i2c_clockrate(struct s3c24xx_i2c *i2c, unsigned int *got)
 
 	return 0;
 }
-
-#if defined(CONFIG_ARM_S3C24XX_CPUFREQ)
-
-#define freq_to_i2c(_n) container_of(_n, struct s3c24xx_i2c, freq_transition)
-
-static int s3c24xx_i2c_cpufreq_transition(struct notifier_block *nb,
-					  unsigned long val, void *data)
-{
-	struct s3c24xx_i2c *i2c = freq_to_i2c(nb);
-	unsigned int got;
-	int delta_f;
-	int ret;
-
-	delta_f = clk_get_rate(i2c->clk) - i2c->clkrate;
-
-	/* if we're post-change and the input clock has slowed down
-	 * or at pre-change and the clock is about to speed up, then
-	 * adjust our clock rate. <0 is slow, >0 speedup.
-	 */
-
-	if ((val == CPUFREQ_POSTCHANGE && delta_f < 0) ||
-	    (val == CPUFREQ_PRECHANGE && delta_f > 0)) {
-		i2c_lock_bus(&i2c->adap, I2C_LOCK_ROOT_ADAPTER);
-		ret = s3c24xx_i2c_clockrate(i2c, &got);
-		i2c_unlock_bus(&i2c->adap, I2C_LOCK_ROOT_ADAPTER);
-
-		if (ret < 0)
-			dev_err(i2c->dev, "cannot find frequency (%d)\n", ret);
-		else
-			dev_info(i2c->dev, "setting freq %d\n", got);
-	}
-
-	return 0;
-}
-
-static inline int s3c24xx_i2c_register_cpufreq(struct s3c24xx_i2c *i2c)
-{
-	i2c->freq_transition.notifier_call = s3c24xx_i2c_cpufreq_transition;
-
-	return cpufreq_register_notifier(&i2c->freq_transition,
-					 CPUFREQ_TRANSITION_NOTIFIER);
-}
-
-static inline void s3c24xx_i2c_deregister_cpufreq(struct s3c24xx_i2c *i2c)
-{
-	cpufreq_unregister_notifier(&i2c->freq_transition,
-				    CPUFREQ_TRANSITION_NOTIFIER);
-}
-
-#else
-static inline int s3c24xx_i2c_register_cpufreq(struct s3c24xx_i2c *i2c)
-{
-	return 0;
-}
-
-static inline void s3c24xx_i2c_deregister_cpufreq(struct s3c24xx_i2c *i2c)
-{
-}
-#endif
 
 #ifdef CONFIG_OF
 static int s3c24xx_i2c_parse_dt_gpio(struct s3c24xx_i2c *i2c)
@@ -1076,7 +1015,7 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 	else
 		s3c24xx_i2c_parse_dt(pdev->dev.of_node, i2c);
 
-	strlcpy(i2c->adap.name, "s3c2410-i2c", sizeof(i2c->adap.name));
+	strscpy(i2c->adap.name, "s3c2410-i2c", sizeof(i2c->adap.name));
 	i2c->adap.owner = THIS_MODULE;
 	i2c->adap.algo = &s3c24xx_i2c_algorithm;
 	i2c->adap.retries = 2;
@@ -1096,9 +1035,7 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 	dev_dbg(&pdev->dev, "clock source %p\n", i2c->clk);
 
 	/* map the registers */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	i2c->regs = devm_ioremap_resource(&pdev->dev, res);
-
+	i2c->regs = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(i2c->regs))
 		return PTR_ERR(i2c->regs);
 
@@ -1137,8 +1074,7 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 	 */
 	if (!(i2c->quirks & QUIRK_POLL)) {
 		i2c->irq = ret = platform_get_irq(pdev, 0);
-		if (ret <= 0) {
-			dev_err(&pdev->dev, "cannot find IRQ\n");
+		if (ret < 0) {
 			clk_unprepare(i2c->clk);
 			return ret;
 		}
@@ -1150,13 +1086,6 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 			clk_unprepare(i2c->clk);
 			return ret;
 		}
-	}
-
-	ret = s3c24xx_i2c_register_cpufreq(i2c);
-	if (ret < 0) {
-		dev_err(&pdev->dev, "failed to register cpufreq notifier\n");
-		clk_unprepare(i2c->clk);
-		return ret;
 	}
 
 	/*
@@ -1175,7 +1104,6 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 	ret = i2c_add_numbered_adapter(&i2c->adap);
 	if (ret < 0) {
 		pm_runtime_disable(&pdev->dev);
-		s3c24xx_i2c_deregister_cpufreq(i2c);
 		clk_unprepare(i2c->clk);
 		return ret;
 	}
@@ -1184,7 +1112,7 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int s3c24xx_i2c_remove(struct platform_device *pdev)
+static void s3c24xx_i2c_remove(struct platform_device *pdev)
 {
 	struct s3c24xx_i2c *i2c = platform_get_drvdata(pdev);
 
@@ -1192,14 +1120,9 @@ static int s3c24xx_i2c_remove(struct platform_device *pdev)
 
 	pm_runtime_disable(&pdev->dev);
 
-	s3c24xx_i2c_deregister_cpufreq(i2c);
-
 	i2c_del_adapter(&i2c->adap);
-
-	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int s3c24xx_i2c_suspend_noirq(struct device *dev)
 {
 	struct s3c24xx_i2c *i2c = dev_get_drvdata(dev);
@@ -1229,26 +1152,19 @@ static int s3c24xx_i2c_resume_noirq(struct device *dev)
 
 	return 0;
 }
-#endif
 
-#ifdef CONFIG_PM
 static const struct dev_pm_ops s3c24xx_i2c_dev_pm_ops = {
-	SET_NOIRQ_SYSTEM_SLEEP_PM_OPS(s3c24xx_i2c_suspend_noirq,
-				      s3c24xx_i2c_resume_noirq)
+	NOIRQ_SYSTEM_SLEEP_PM_OPS(s3c24xx_i2c_suspend_noirq,
+				  s3c24xx_i2c_resume_noirq)
 };
-
-#define S3C24XX_DEV_PM_OPS (&s3c24xx_i2c_dev_pm_ops)
-#else
-#define S3C24XX_DEV_PM_OPS NULL
-#endif
 
 static struct platform_driver s3c24xx_i2c_driver = {
 	.probe		= s3c24xx_i2c_probe,
-	.remove		= s3c24xx_i2c_remove,
+	.remove_new	= s3c24xx_i2c_remove,
 	.id_table	= s3c24xx_driver_ids,
 	.driver		= {
 		.name	= "s3c-i2c",
-		.pm	= S3C24XX_DEV_PM_OPS,
+		.pm	= pm_sleep_ptr(&s3c24xx_i2c_dev_pm_ops),
 		.of_match_table = of_match_ptr(s3c24xx_i2c_match),
 	},
 };

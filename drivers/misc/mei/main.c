@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Copyright (c) 2003-2020, Intel Corporation. All rights reserved.
+ * Copyright (c) 2003-2022, Intel Corporation. All rights reserved.
  * Intel Management Engine Interface (Intel MEI) Linux driver
  */
 
@@ -18,7 +18,6 @@
 #include <linux/ioctl.h>
 #include <linux/cdev.h>
 #include <linux/sched/signal.h>
-#include <linux/uuid.h>
 #include <linux/compat.h>
 #include <linux/jiffies.h>
 #include <linux/interrupt.h>
@@ -28,7 +27,10 @@
 #include "mei_dev.h"
 #include "client.h"
 
-static struct class *mei_class;
+static const struct class mei_class = {
+	.name = "mei",
+};
+
 static dev_t mei_devt;
 #define MEI_MAX_DEVS  MINORMASK
 static DEFINE_MUTEX(mei_minor_lock);
@@ -50,8 +52,6 @@ static int mei_open(struct inode *inode, struct file *file)
 	int err;
 
 	dev = container_of(inode->i_cdev, struct mei_device, cdev);
-	if (!dev)
-		return -ENODEV;
 
 	mutex_lock(&dev->device_lock);
 
@@ -385,7 +385,7 @@ static ssize_t mei_write(struct file *file, const char __user *ubuf,
 		goto out;
 	}
 
-	rets = mei_cl_write(cl, cb);
+	rets = mei_cl_write(cl, cb, MAX_SCHEDULE_TIMEOUT);
 out:
 	mutex_unlock(&dev->device_lock);
 	return rets;
@@ -573,7 +573,7 @@ static int mei_ioctl_connect_vtag(struct file *file,
 				    cl->state == MEI_FILE_DISCONNECTED ||
 				    cl->state == MEI_FILE_DISCONNECT_REQUIRED ||
 				    cl->state == MEI_FILE_DISCONNECT_REPLY),
-				   mei_secs_to_jiffies(MEI_CL_CONNECT_TIMEOUT));
+				   dev->timeouts.cl_connect);
 		mutex_lock(&dev->device_lock);
 	}
 
@@ -1026,7 +1026,7 @@ static ssize_t tx_queue_limit_show(struct device *device,
 	size = dev->tx_queue_limit;
 	mutex_unlock(&dev->device_lock);
 
-	return snprintf(buf, PAGE_SIZE, "%u\n", size);
+	return sysfs_emit(buf, "%u\n", size);
 }
 
 static ssize_t tx_queue_limit_store(struct device *device,
@@ -1104,7 +1104,7 @@ static ssize_t dev_state_show(struct device *device,
 static DEVICE_ATTR_RO(dev_state);
 
 /**
- * dev_set_devstate: set to new device state and notify sysfs file.
+ * mei_set_devstate: set to new device state and notify sysfs file.
  *
  * @dev: mei_device
  * @state: new device state
@@ -1118,7 +1118,7 @@ void mei_set_devstate(struct mei_device *dev, enum mei_dev_state state)
 
 	dev->dev_state = state;
 
-	clsdev = class_find_device_by_devt(mei_class, dev->cdev.dev);
+	clsdev = class_find_device_by_devt(&mei_class, dev->cdev.dev);
 	if (clsdev) {
 		sysfs_notify(&clsdev->kobj, NULL, "dev_state");
 		put_device(clsdev);
@@ -1235,7 +1235,7 @@ int mei_register(struct mei_device *dev, struct device *parent)
 		goto err_dev_add;
 	}
 
-	clsdev = device_create_with_groups(mei_class, parent, devno,
+	clsdev = device_create_with_groups(&mei_class, parent, devno,
 					   dev, mei_groups,
 					   "mei%d", dev->minor);
 
@@ -1267,7 +1267,7 @@ void mei_deregister(struct mei_device *dev)
 
 	mei_dbgfs_deregister(dev);
 
-	device_destroy(mei_class, devno);
+	device_destroy(&mei_class, devno);
 
 	mei_minor_free(dev);
 }
@@ -1277,12 +1277,9 @@ static int __init mei_init(void)
 {
 	int ret;
 
-	mei_class = class_create(THIS_MODULE, "mei");
-	if (IS_ERR(mei_class)) {
-		pr_err("couldn't create class\n");
-		ret = PTR_ERR(mei_class);
-		goto err;
-	}
+	ret = class_register(&mei_class);
+	if (ret)
+		return ret;
 
 	ret = alloc_chrdev_region(&mei_devt, 0, MEI_MAX_DEVS, "mei");
 	if (ret < 0) {
@@ -1301,15 +1298,14 @@ static int __init mei_init(void)
 err_chrdev:
 	unregister_chrdev_region(mei_devt, MEI_MAX_DEVS);
 err_class:
-	class_destroy(mei_class);
-err:
+	class_unregister(&mei_class);
 	return ret;
 }
 
 static void __exit mei_exit(void)
 {
 	unregister_chrdev_region(mei_devt, MEI_MAX_DEVS);
-	class_destroy(mei_class);
+	class_unregister(&mei_class);
 	mei_cl_bus_exit();
 }
 

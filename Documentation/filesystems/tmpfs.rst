@@ -4,7 +4,7 @@
 Tmpfs
 =====
 
-Tmpfs is a file system which keeps all files in virtual memory.
+Tmpfs is a file system which keeps all of its files in virtual memory.
 
 
 Everything in tmpfs is temporary in the sense that no files will be
@@ -13,17 +13,29 @@ everything stored therein is lost.
 
 tmpfs puts everything into the kernel internal caches and grows and
 shrinks to accommodate the files it contains and is able to swap
-unneeded pages out to swap space. It has maximum size limits which can
-be adjusted on the fly via 'mount -o remount ...'
+unneeded pages out to swap space, if swap was enabled for the tmpfs
+mount. tmpfs also supports THP.
 
-If you compare it to ramfs (which was the template to create tmpfs)
-you gain swapping and limit checking. Another similar thing is the RAM
-disk (/dev/ram*), which simulates a fixed size hard disk in physical
-RAM, where you have to create an ordinary filesystem on top. Ramdisks
-cannot swap and you do not have the possibility to resize them.
+tmpfs extends ramfs with a few userspace configurable options listed and
+explained further below, some of which can be reconfigured dynamically on the
+fly using a remount ('mount -o remount ...') of the filesystem. A tmpfs
+filesystem can be resized but it cannot be resized to a size below its current
+usage. tmpfs also supports POSIX ACLs, and extended attributes for the
+trusted.*, security.* and user.* namespaces. ramfs does not use swap and you
+cannot modify any parameter for a ramfs filesystem. The size limit of a ramfs
+filesystem is how much memory you have available, and so care must be taken if
+used so to not run out of memory.
 
-Since tmpfs lives completely in the page cache and on swap, all tmpfs
-pages will be shown as "Shmem" in /proc/meminfo and "Shared" in
+An alternative to tmpfs and ramfs is to use brd to create RAM disks
+(/dev/ram*), which allows you to simulate a block device disk in physical RAM.
+To write data you would just then need to create an regular filesystem on top
+this ramdisk. As with ramfs, brd ramdisks cannot swap. brd ramdisks are also
+configured in size at initialization and you cannot dynamically resize them.
+Contrary to brd ramdisks, tmpfs has its own filesystem, it does not rely on the
+block layer at all.
+
+Since tmpfs lives completely in the page cache and optionally on swap,
+all tmpfs pages will be shown as "Shmem" in /proc/meminfo and "Shared" in
 free(1). Notice that these counters also include shared memory
 (shmem, see ipcs(1)). The most reliable way to get the count is
 using df(1) and du(1).
@@ -35,7 +47,7 @@ tmpfs has the following uses:
    memory.
 
    This mount does not depend on CONFIG_TMPFS. If CONFIG_TMPFS is not
-   set, the user visible part of tmpfs is not build. But the internal
+   set, the user visible part of tmpfs is not built. But the internal
    mechanisms are always present.
 
 2) glibc 2.2 and above expects tmpfs to be mounted at /dev/shm for
@@ -50,7 +62,7 @@ tmpfs has the following uses:
    This mount is _not_ needed for SYSV shared memory. The internal
    mount is used for that. (In the 2.3 kernel versions it was
    necessary to mount the predecessor of tmpfs (shm fs) to use SYSV
-   shared memory)
+   shared memory.)
 
 3) Some people (including me) find it very convenient to mount it
    e.g. on /tmp and /var/tmp and have a big swap partition. And now
@@ -83,8 +95,67 @@ If nr_blocks=0 (or size=0), blocks will not be limited in that instance;
 if nr_inodes=0, inodes will not be limited.  It is generally unwise to
 mount with such options, since it allows any user with write access to
 use up all the memory on the machine; but enhances the scalability of
-that instance in a system with many cpus making intensive use of it.
+that instance in a system with many CPUs making intensive use of it.
 
+If nr_inodes is not 0, that limited space for inodes is also used up by
+extended attributes: "df -i"'s IUsed and IUse% increase, IFree decreases.
+
+tmpfs blocks may be swapped out, when there is a shortage of memory.
+tmpfs has a mount option to disable its use of swap:
+
+======  ===========================================================
+noswap  Disables swap. Remounts must respect the original settings.
+        By default swap is enabled.
+======  ===========================================================
+
+tmpfs also supports Transparent Huge Pages which requires a kernel
+configured with CONFIG_TRANSPARENT_HUGEPAGE and with huge supported for
+your system (has_transparent_hugepage(), which is architecture specific).
+The mount options for this are:
+
+================ ==============================================================
+huge=never       Do not allocate huge pages.  This is the default.
+huge=always      Attempt to allocate huge page every time a new page is needed.
+huge=within_size Only allocate huge page if it will be fully within i_size.
+                 Also respect madvise(2) hints.
+huge=advise      Only allocate huge page if requested with madvise(2).
+================ ==============================================================
+
+See also Documentation/admin-guide/mm/transhuge.rst, which describes the
+sysfs file /sys/kernel/mm/transparent_hugepage/shmem_enabled: which can
+be used to deny huge pages on all tmpfs mounts in an emergency, or to
+force huge pages on all tmpfs mounts for testing.
+
+tmpfs also supports quota with the following mount options
+
+======================== =================================================
+quota                    User and group quota accounting and enforcement
+                         is enabled on the mount. Tmpfs is using hidden
+                         system quota files that are initialized on mount.
+usrquota                 User quota accounting and enforcement is enabled
+                         on the mount.
+grpquota                 Group quota accounting and enforcement is enabled
+                         on the mount.
+usrquota_block_hardlimit Set global user quota block hard limit.
+usrquota_inode_hardlimit Set global user quota inode hard limit.
+grpquota_block_hardlimit Set global group quota block hard limit.
+grpquota_inode_hardlimit Set global group quota inode hard limit.
+======================== =================================================
+
+None of the quota related mount options can be set or changed on remount.
+
+Quota limit parameters accept a suffix k, m or g for kilo, mega and giga
+and can't be changed on remount. Default global quota limits are taking
+effect for any and all user/group/project except root the first time the
+quota entry for user/group/project id is being accessed - typically the
+first time an inode with a particular id ownership is being created after
+the mount. In other words, instead of the limits being initialized to zero,
+they are initialized with the particular value provided with these mount
+options. The limits can be changed for any user/group id at any time as they
+normally can be.
+
+Note that tmpfs quotas do not support user namespaces so no uid/gid
+translation is done if quotas are enabled inside user namespaces.
 
 tmpfs has a mount option to set the NUMA memory allocation policy for
 all files in that instance (if CONFIG_NUMA is enabled) - which can be

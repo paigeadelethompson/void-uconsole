@@ -6,7 +6,7 @@
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/pinctrl/pinctrl.h>
 #include <linux/platform_device.h>
 
@@ -337,7 +337,7 @@ static int imx8mm_pinctrl_probe(struct platform_device *pdev)
 static struct platform_driver imx8mm_pinctrl_driver = {
 	.driver = {
 		.name = "imx8mm-pinctrl",
-		.of_match_table = of_match_ptr(imx8mm_pinctrl_of_match),
+		.of_match_table = imx8mm_pinctrl_of_match,
 		.suppress_bind_attrs = true,
 	},
 	.probe = imx8mm_pinctrl_probe,

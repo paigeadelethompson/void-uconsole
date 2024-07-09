@@ -199,8 +199,7 @@ static struct i2c_driver ltc3815_driver = {
 	.driver = {
 		   .name = "ltc3815",
 		   },
-	.probe_new = ltc3815_probe,
-	.remove = pmbus_do_remove,
+	.probe = ltc3815_probe,
 	.id_table = ltc3815_id,
 };
 
@@ -209,3 +208,4 @@ module_i2c_driver(ltc3815_driver);
 MODULE_AUTHOR("Guenter Roeck");
 MODULE_DESCRIPTION("PMBus driver for LTC3815");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(PMBUS);

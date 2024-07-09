@@ -55,6 +55,8 @@
 #include "vc_sm_knl.h"
 #include <linux/broadcom/vc_sm_cma_ioctl.h>
 
+MODULE_IMPORT_NS(DMA_BUF);
+
 /* ---- Private Constants and Types --------------------------------------- */
 
 #define DEVICE_NAME		"vcsm-cma"
@@ -104,6 +106,7 @@ struct sm_state_t {
 					 * has finished with a resource.
 					 */
 	u32 int_trans_id;		/* Interrupted transaction. */
+	struct vchiq_instance *vchiq_instance;
 };
 
 struct vc_sm_dma_buf_attachment {
@@ -237,6 +240,7 @@ static void vc_sm_add_resource(struct vc_sm_privdata_t *privdata,
 
 /*
  * Cleans up imported dmabuf.
+ * Should be called with mutex held.
  */
 static void vc_sm_clean_up_dmabuf(struct vc_sm_buffer *buffer)
 {
@@ -244,7 +248,6 @@ static void vc_sm_clean_up_dmabuf(struct vc_sm_buffer *buffer)
 		return;
 
 	/* Handle cleaning up imported dmabufs */
-	mutex_lock(&buffer->lock);
 	if (buffer->import.sgt) {
 		dma_buf_unmap_attachment(buffer->import.attach,
 					 buffer->import.sgt,
@@ -252,10 +255,9 @@ static void vc_sm_clean_up_dmabuf(struct vc_sm_buffer *buffer)
 		buffer->import.sgt = NULL;
 	}
 	if (buffer->import.attach) {
-		dma_buf_detach(buffer->dma_buf, buffer->import.attach);
+		dma_buf_detach(buffer->import.dma_buf, buffer->import.attach);
 		buffer->import.attach = NULL;
 	}
-	mutex_unlock(&buffer->lock);
 }
 
 /*
@@ -442,16 +444,13 @@ static struct sg_table *vc_sm_map_dma_buf(struct dma_buf_attachment *attachment,
 {
 	struct vc_sm_dma_buf_attachment *a = attachment->priv;
 	/* stealing dmabuf mutex to serialize map/unmap operations */
-	struct mutex *lock = &attachment->dmabuf->lock;
 	struct sg_table *table;
 
-	mutex_lock(lock);
 	pr_debug("%s attachment %p\n", __func__, attachment);
 	table = &a->sg_table;
 
 	/* return previously mapped sg table */
 	if (a->dma_dir == direction) {
-		mutex_unlock(lock);
 		return table;
 	}
 
@@ -467,12 +466,10 @@ static struct sg_table *vc_sm_map_dma_buf(struct dma_buf_attachment *attachment,
 				  table->orig_nents, direction);
 	if (!table->nents) {
 		pr_err("failed to map scatterlist\n");
-		mutex_unlock(lock);
 		return ERR_PTR(-EIO);
 	}
 
 	a->dma_dir = direction;
-	mutex_unlock(lock);
 
 	pr_debug("%s attachment %p\n", __func__, attachment);
 	return table;
@@ -494,8 +491,6 @@ static int vc_sm_dmabuf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
 	pr_debug("%s dmabuf %p, buf %p, vm_start %08lX\n", __func__, dmabuf,
 		 buf, vma->vm_start);
 
-	mutex_lock(&buf->lock);
-
 	/* now map it to userspace */
 	vma->vm_pgoff = 0;
 
@@ -507,9 +502,7 @@ static int vc_sm_dmabuf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
 		return ret;
 	}
 
-	vma->vm_flags |= VM_DONTEXPAND | VM_DONTDUMP;
-
-	mutex_unlock(&buf->lock);
+	vm_flags_reset(vma, vma->vm_flags | VM_DONTEXPAND | VM_DONTDUMP);
 
 	if (ret)
 		pr_err("%s: failure mapping buffer to userspace\n",
@@ -531,7 +524,7 @@ static void vc_sm_dma_buf_release(struct dma_buf *dmabuf)
 
 	pr_debug("%s dmabuf %p, buffer %p\n", __func__, dmabuf, buffer);
 
-	buffer->in_use = 0;
+	buffer->in_use = false;
 
 	/* Unmap on the VPU */
 	vc_sm_vpu_free(buffer);
@@ -673,23 +666,6 @@ int vc_sm_import_dmabuf_mmap(struct dma_buf *dmabuf, struct vm_area_struct *vma)
 }
 
 static
-void vc_sm_import_dma_buf_release(struct dma_buf *dmabuf)
-{
-	struct vc_sm_buffer *buf = dmabuf->priv;
-
-	pr_debug("%s: Relasing dma_buf %p\n", __func__, dmabuf);
-	mutex_lock(&buf->lock);
-	if (!buf->imported)
-		return;
-
-	buf->in_use = 0;
-
-	vc_sm_vpu_free(buf);
-
-	vc_sm_release_resource(buf);
-}
-
-static
 int vc_sm_import_dma_buf_begin_cpu_access(struct dma_buf *dmabuf,
 					  enum dma_data_direction direction)
 {
@@ -717,7 +693,7 @@ static const struct dma_buf_ops dma_buf_import_ops = {
 	.map_dma_buf = vc_sm_import_map_dma_buf,
 	.unmap_dma_buf = vc_sm_import_unmap_dma_buf,
 	.mmap = vc_sm_import_dmabuf_mmap,
-	.release = vc_sm_import_dma_buf_release,
+	.release = vc_sm_dma_buf_release,
 	.attach = vc_sm_import_dma_buf_attach,
 	.detach = vc_sm_import_dma_buf_detatch,
 	.begin_cpu_access = vc_sm_import_dma_buf_begin_cpu_access,
@@ -738,6 +714,7 @@ vc_sm_cma_import_dmabuf_internal(struct vc_sm_privdata_t *private,
 	struct dma_buf_attachment *attach = NULL;
 	struct sg_table *sgt = NULL;
 	dma_addr_t dma_addr;
+	u32 cache_alias;
 	int ret = 0;
 	int status;
 
@@ -780,9 +757,13 @@ vc_sm_cma_import_dmabuf_internal(struct vc_sm_privdata_t *private,
 	import.type = VC_SM_ALLOC_NON_CACHED;
 	dma_addr = sg_dma_address(sgt->sgl);
 	import.addr = (u32)dma_addr;
-	if ((import.addr & 0xC0000000) != 0xC0000000) {
+	cache_alias = import.addr & 0xC0000000;
+	if (cache_alias != 0xC0000000 && cache_alias != 0x80000000) {
 		pr_err("%s: Expecting an uncached alias for dma_addr %pad\n",
 		       __func__, &dma_addr);
+		/* Note that this assumes we're on >= Pi2, but it implies a
+		 * DT configuration error.
+		 */
 		import.addr |= 0xC0000000;
 	}
 	import.size = sg_dma_len(sgt->sgl);
@@ -823,13 +804,13 @@ vc_sm_cma_import_dmabuf_internal(struct vc_sm_privdata_t *private,
 	buffer->size = import.size;
 	buffer->vpu_state = VPU_MAPPED;
 
-	buffer->imported = 1;
+	buffer->imported = true;
 	buffer->import.dma_buf = dma_buf;
 
 	buffer->import.attach = attach;
 	buffer->import.sgt = sgt;
 	buffer->dma_addr = dma_addr;
-	buffer->in_use = 1;
+	buffer->in_use = true;
 	buffer->kernel_id = import.kernel_id;
 
 	/*
@@ -1260,7 +1241,9 @@ static void (*cache_op_to_func(const unsigned int cache_op))
 		return NULL;
 
 	case VC_SM_CACHE_OP_INV:
+		return dmac_inv_range;
 	case VC_SM_CACHE_OP_CLEAN:
+		return dmac_clean_range;
 	case VC_SM_CACHE_OP_FLUSH:
 		return dmac_flush_range;
 
@@ -1500,7 +1483,6 @@ static const struct file_operations vc_sm_ops = {
 static void vc_sm_connected_init(void)
 {
 	int ret;
-	struct vchiq_instance *vchiq_instance;
 	struct vc_sm_version version;
 	struct vc_sm_result_t version_result;
 
@@ -1510,7 +1492,7 @@ static void vc_sm_connected_init(void)
 	 * Initialize and create a VCHI connection for the shared memory service
 	 * running on videocore.
 	 */
-	ret = vchiq_initialise(&vchiq_instance);
+	ret = vchiq_initialise(&sm_state->vchiq_instance);
 	if (ret) {
 		pr_err("[%s]: failed to initialise VCHI instance (ret=%d)\n",
 		       __func__, ret);
@@ -1518,7 +1500,7 @@ static void vc_sm_connected_init(void)
 		return;
 	}
 
-	ret = vchiq_connect(vchiq_instance);
+	ret = vchiq_connect(sm_state->vchiq_instance);
 	if (ret) {
 		pr_err("[%s]: failed to connect VCHI instance (ret=%d)\n",
 		       __func__, ret);
@@ -1527,7 +1509,7 @@ static void vc_sm_connected_init(void)
 	}
 
 	/* Initialize an instance of the shared memory service. */
-	sm_state->sm_handle = vc_sm_cma_vchi_init(vchiq_instance, 1,
+	sm_state->sm_handle = vc_sm_cma_vchi_init(sm_state->vchiq_instance, 1,
 						  vc_sm_vpu_event);
 	if (!sm_state->sm_handle) {
 		pr_err("[%s]: failed to initialize shared memory service\n",
@@ -1585,7 +1567,7 @@ err_remove_misc_dev:
 	misc_deregister(&sm_state->misc_dev);
 err_remove_debugfs:
 	debugfs_remove_recursive(sm_state->dir_root);
-	vc_sm_cma_vchi_stop(&sm_state->sm_handle);
+	vc_sm_cma_vchi_stop(sm_state->vchiq_instance, &sm_state->sm_handle);
 }
 
 /* Driver loading. */
@@ -1623,7 +1605,7 @@ static int bcm2835_vc_sm_cma_remove(struct platform_device *pdev)
 		debugfs_remove_recursive(sm_state->dir_root);
 
 		/* Stop the videocore shared memory service. */
-		vc_sm_cma_vchi_stop(&sm_state->sm_handle);
+		vc_sm_cma_vchi_stop(sm_state->vchiq_instance, &sm_state->sm_handle);
 	}
 
 	if (sm_state) {

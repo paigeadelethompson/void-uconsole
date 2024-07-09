@@ -18,14 +18,12 @@ struct rt715_priv {
 	int dbg_nid;
 	int dbg_vid;
 	int dbg_payload;
-	enum sdw_slave_status status;
 	struct sdw_bus_params params;
 	bool hw_init;
 	bool first_hw_init;
-};
-
-struct sdw_stream_data {
-	struct sdw_stream_runtime *sdw_stream;
+	unsigned int kctl_2ch_vol_ori[2];
+	unsigned int kctl_8ch_switch_ori[8];
+	unsigned int kctl_8ch_vol_ori[8];
 };
 
 /* NID */
@@ -50,6 +48,7 @@ struct sdw_stream_data {
 #define RT715_INLINE_CMD				0x55
 
 /* Index (NID:20h) */
+#define RT715_VD_CLEAR_CTRL				0x01
 #define RT715_SDW_INPUT_SEL				0x39
 #define RT715_EXT_DMIC_CLK_CTRL2			0x54
 
@@ -73,6 +72,8 @@ struct sdw_stream_data {
 #define RT715_READ_HDA_0				0x2015
 #define RT715_PRIV_INDEX_W_H				0x7520
 #define RT715_PRIV_INDEX_W_L				0x85a0
+#define RT715_PRIV_INDEX_W_H_2				0x7500
+#define RT715_PRIV_INDEX_W_L_2				0x8580
 #define RT715_PRIV_DATA_W_H				0x7420
 #define RT715_PRIV_DATA_W_L				0x84a0
 #define RT715_PRIV_INDEX_R_H				0x9d20
@@ -200,6 +201,10 @@ struct sdw_stream_data {
 #define RT715_SET_DMIC4_CONFIG_DEFAULT4\
 	(RT715_VERB_SET_CONFIG_DEFAULT4 | RT715_DMIC4)
 
+/* vendor register clear ctrl-1    (0x01)(NID:20h) */
+#define RT715_CLEAR_HIDDEN_REG (0x1 << 15)
+
+
 #define RT715_MUTE_SFT					7
 #define RT715_DIR_IN_SFT				6
 #define RT715_DIR_OUT_SFT				7
@@ -207,7 +212,6 @@ struct sdw_stream_data {
 enum {
 	RT715_AIF1,
 	RT715_AIF2,
-	RT715_AIFS,
 };
 
 #define RT715_POWER_UP_DELAY_MS 400

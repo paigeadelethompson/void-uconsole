@@ -2,24 +2,13 @@
 #define _VC4_HDMI_H_
 
 #include <drm/drm_connector.h>
+#include <linux/mutex.h>
 #include <media/cec.h>
 #include <sound/dmaengine_pcm.h>
+#include <sound/hdmi-codec.h>
 #include <sound/soc.h>
 
 #include "vc4_drv.h"
-
-/* VC4 HDMI encoder KMS struct */
-struct vc4_hdmi_encoder {
-	struct vc4_encoder base;
-	bool hdmi_monitor;
-	bool limited_rgb_range;
-};
-
-static inline struct vc4_hdmi_encoder *
-to_vc4_hdmi_encoder(struct drm_encoder *encoder)
-{
-	return container_of(encoder, struct vc4_hdmi_encoder, base.base);
-}
 
 struct vc4_hdmi;
 struct vc4_hdmi_register;
@@ -71,18 +60,21 @@ struct vc4_hdmi_variant {
 	/* Callback to get the resources (memory region, interrupts,
 	 * clocks, etc) for that variant.
 	 */
-	int (*init_resources)(struct vc4_hdmi *vc4_hdmi);
+	int (*init_resources)(struct drm_device *drm,
+			      struct vc4_hdmi *vc4_hdmi);
 
 	/* Callback to reset the HDMI block */
 	void (*reset)(struct vc4_hdmi *vc4_hdmi);
 
 	/* Callback to enable / disable the CSC */
-	void (*csc_setup)(struct vc4_hdmi *vc4_hdmi, bool enable);
+	void (*csc_setup)(struct vc4_hdmi *vc4_hdmi,
+			  struct drm_connector_state *state,
+			  const struct drm_display_mode *mode);
 
 	/* Callback to configure the video timings in the HDMI block */
 	void (*set_timings)(struct vc4_hdmi *vc4_hdmi,
 			    struct drm_connector_state *state,
-			    struct drm_display_mode *mode);
+			    const struct drm_display_mode *mode);
 
 	/* Callback to initialize the PHY according to the connector state */
 	void (*phy_init)(struct vc4_hdmi *vc4_hdmi,
@@ -102,6 +94,9 @@ struct vc4_hdmi_variant {
 
 	/* Enables HDR metadata */
 	bool supports_hdr;
+
+	/* Callback for hardware specific hotplug detect */
+	bool (*hp_detect)(struct vc4_hdmi *vc4_hdmi);
 };
 
 /* HDMI audio information */
@@ -111,17 +106,24 @@ struct vc4_hdmi_audio {
 	struct snd_soc_dai_link_component cpu;
 	struct snd_soc_dai_link_component codec;
 	struct snd_soc_dai_link_component platform;
-	int samplerate;
-	int channels;
 	struct snd_dmaengine_dai_dma_data dma_data;
-	struct snd_pcm_substream *substream;
-
+	struct hdmi_audio_infoframe infoframe;
+	struct platform_device *codec_pdev;
 	bool streaming;
+};
 
-	unsigned char iec_status[4];
-	const struct snd_pcm_chmap_elem *chmap;
-	unsigned int chmap_idx;
-	unsigned int max_channels;
+enum vc4_hdmi_output_format {
+	VC4_HDMI_OUTPUT_AUTO,
+	VC4_HDMI_OUTPUT_RGB,
+	VC4_HDMI_OUTPUT_YUV422,
+	VC4_HDMI_OUTPUT_YUV444,
+	VC4_HDMI_OUTPUT_YUV420,
+};
+
+enum vc4_hdmi_broadcast_rgb {
+	VC4_HDMI_BROADCAST_RGB_AUTO,
+	VC4_HDMI_BROADCAST_RGB_FULL,
+	VC4_HDMI_BROADCAST_RGB_LIMITED,
 };
 
 /* General HDMI hardware state. */
@@ -131,8 +133,13 @@ struct vc4_hdmi {
 	struct platform_device *pdev;
 	const struct vc4_hdmi_variant *variant;
 
-	struct vc4_hdmi_encoder encoder;
+	struct vc4_encoder encoder;
 	struct drm_connector connector;
+
+	struct delayed_work scrambling_work;
+
+	struct drm_property *broadcast_rgb_property;
+	struct drm_property *output_format_property;
 
 	struct i2c_adapter *ddc;
 	void __iomem *hdmicore_regs;
@@ -151,8 +158,7 @@ struct vc4_hdmi {
 	/* VC5 Only */
 	void __iomem *rm_regs;
 
-	int hpd_gpio;
-	bool hpd_active_low;
+	struct gpio_desc *hpd_gpio;
 
 	/*
 	 * On some systems (like the RPi4), some modes are in the same
@@ -175,42 +181,110 @@ struct vc4_hdmi {
 
 	struct reset_control *reset;
 
-	/* Common debugfs regset */
 	struct debugfs_regset32 hdmi_regset;
 	struct debugfs_regset32 hd_regset;
-	/* VC5 debugfs regset */
+
+	/* VC5 only */
 	struct debugfs_regset32 cec_regset;
 	struct debugfs_regset32 csc_regset;
 	struct debugfs_regset32 dvp_regset;
 	struct debugfs_regset32 phy_regset;
 	struct debugfs_regset32 ram_regset;
 	struct debugfs_regset32 rm_regset;
+
+	/**
+	 * @hw_lock: Spinlock protecting device register access.
+	 */
+	spinlock_t hw_lock;
+
+	/**
+	 * @mutex: Mutex protecting the driver access across multiple
+	 * frameworks (KMS, ALSA, CEC).
+	 */
+	struct mutex mutex;
+
+	/**
+	 * @saved_adjusted_mode: Copy of @drm_crtc_state.adjusted_mode
+	 * for use by ALSA hooks and interrupt handlers. Protected by @mutex.
+	 */
+	struct drm_display_mode saved_adjusted_mode;
+
+	/**
+	 * @packet_ram_enabled: Is the HDMI controller packet RAM currently
+	 * on? Protected by @mutex.
+	 */
+	bool packet_ram_enabled;
+
+	/**
+	 * @scdc_enabled: Is the HDMI controller currently running with
+	 * the scrambler on? Protected by @mutex.
+	 */
+	bool scdc_enabled;
+
+	/**
+	 * @output_bpc: Copy of @vc4_connector_state.output_bpc for use
+	 * outside of KMS hooks. Protected by @mutex.
+	 */
+	unsigned int output_bpc;
+
+	/**
+	 * @output_format: Copy of @vc4_connector_state.output_format
+	 * for use outside of KMS hooks. Protected by @mutex.
+	 */
+	enum vc4_hdmi_output_format output_format;
+	/**
+	 * @requested_output_format: Copy of @vc4_connector_state.requested_output_format
+	 * for use outside of KMS hooks. Protected by @mutex.
+	 */
+	enum vc4_hdmi_output_format requested_output_format;
+
+	/**
+	 * @plugged_cb: Callback provided by hdmi-codec to indicate that an
+	 * HDMI hotplug occurred and jack state should be updated. Protected by
+	 * @update_plugged_status_lock.
+	 */
+	hdmi_codec_plugged_cb plugged_cb;
+
+	/**
+	 * @plugged_cb: Context for plugged_cb. Protected by
+	 * @update_plugged_status_lock.
+	 */
+	struct device *codec_dev;
+
+	/**
+	 * @update_plugged_status_lock: Prevents a race condition where an HDMI
+	 * hotplug might occur between @plugged_cb and @codec_dev being set.
+	 */
+	struct mutex update_plugged_status_lock;
+
+	/**
+	 * @hdmi_jack: Represents the connection state of the HDMI plug, for
+	 * ALSA jack detection.
+	 */
+	struct snd_soc_jack hdmi_jack;
 };
 
-static inline struct vc4_hdmi *
-connector_to_vc4_hdmi(struct drm_connector *connector)
-{
-	return container_of(connector, struct vc4_hdmi, connector);
-}
+#define connector_to_vc4_hdmi(_connector)				\
+	container_of_const(_connector, struct vc4_hdmi, connector)
 
 static inline struct vc4_hdmi *
 encoder_to_vc4_hdmi(struct drm_encoder *encoder)
 {
-	struct vc4_hdmi_encoder *_encoder = to_vc4_hdmi_encoder(encoder);
-
-	return container_of(_encoder, struct vc4_hdmi, encoder);
+	struct vc4_encoder *_encoder = to_vc4_encoder(encoder);
+	return container_of_const(_encoder, struct vc4_hdmi, encoder);
 }
 
 struct vc4_hdmi_connector_state {
 	struct drm_connector_state	base;
-	unsigned long long		pixel_rate;
+	unsigned long long		tmds_char_rate;
+	unsigned int 			output_bpc;
+	enum vc4_hdmi_output_format	output_format;
+	enum vc4_hdmi_broadcast_rgb	broadcast_rgb;
+	enum vc4_hdmi_output_format	requested_output_format;
 };
 
-static inline struct vc4_hdmi_connector_state *
-conn_state_to_vc4_hdmi_conn_state(struct drm_connector_state *conn_state)
-{
-	return container_of(conn_state, struct vc4_hdmi_connector_state, base);
-}
+#define conn_state_to_vc4_hdmi_conn_state(_state)			\
+	container_of_const(_state, struct vc4_hdmi_connector_state, base)
 
 void vc4_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi,
 		       struct vc4_hdmi_connector_state *vc4_conn_state);
@@ -223,5 +297,9 @@ void vc5_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi,
 void vc5_hdmi_phy_disable(struct vc4_hdmi *vc4_hdmi);
 void vc5_hdmi_phy_rng_enable(struct vc4_hdmi *vc4_hdmi);
 void vc5_hdmi_phy_rng_disable(struct vc4_hdmi *vc4_hdmi);
+
+void vc6_hdmi_phy_init(struct vc4_hdmi *vc4_hdmi,
+		       struct vc4_hdmi_connector_state *vc4_conn_state);
+void vc6_hdmi_phy_disable(struct vc4_hdmi *vc4_hdmi);
 
 #endif /* _VC4_HDMI_H_ */

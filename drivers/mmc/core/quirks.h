@@ -10,9 +10,31 @@
  *
  */
 
+#include <linux/of.h>
 #include <linux/mmc/sdio_ids.h>
 
 #include "card.h"
+
+static const struct mmc_fixup __maybe_unused mmc_sd_fixups[] = {
+	/*
+	 * Kingston Canvas Go! Plus microSD cards never finish SD cache flush.
+	 * This has so far only been observed on cards from 11/2019, while new
+	 * cards from 2023/05 do not exhibit this behavior.
+	 */
+	_FIXUP_EXT("SD64G", CID_MANFID_KINGSTON_SD, 0x5449, 2019, 11,
+		   0, -1ull, SDIO_ANY_ID, SDIO_ANY_ID, add_quirk_sd,
+		   MMC_QUIRK_BROKEN_SD_CACHE, EXT_CSD_REV_ANY),
+
+	/*
+	 * Samsung Pro Plus/EVO Plus/Pro Ultimate SD cards (2023) claim to cache
+	 * flush OK, but become unresponsive afterwards.
+	 */
+	_FIXUP_EXT(CID_NAME_ANY, CID_MANFID_SAMSUNG_SD, 0x534d, 2023, CID_MONTH_ANY,
+		   0, -1ull, SDIO_ANY_ID, SDIO_ANY_ID, add_quirk_sd,
+		   MMC_QUIRK_BROKEN_SD_CACHE, EXT_CSD_REV_ANY),
+
+	END_FIXUP
+};
 
 static const struct mmc_fixup __maybe_unused mmc_blk_fixups[] = {
 #define INAND_CMD38_ARG_EXT_CSD  113
@@ -100,6 +122,27 @@ static const struct mmc_fixup __maybe_unused mmc_blk_fixups[] = {
 		  MMC_QUIRK_TRIM_BROKEN),
 
 	/*
+	 * Micron MTFC4GACAJCN-1M supports TRIM but does not appear to support
+	 * WRITE_ZEROES offloading. It also supports caching, but the cache can
+	 * only be flushed after a write has occurred.
+	 */
+	MMC_FIXUP("Q2J54A", CID_MANFID_MICRON, 0x014e, add_quirk_mmc,
+		  MMC_QUIRK_TRIM_BROKEN | MMC_QUIRK_BROKEN_CACHE_FLUSH),
+
+	/*
+	 * Kingston EMMC04G-M627 advertises TRIM but it does not seems to
+	 * support being used to offload WRITE_ZEROES.
+	 */
+	MMC_FIXUP("M62704", CID_MANFID_KINGSTON, 0x0100, add_quirk_mmc,
+		  MMC_QUIRK_TRIM_BROKEN),
+
+	/*
+	 * Some SD cards reports discard support while they don't
+	 */
+	MMC_FIXUP(CID_NAME_ANY, CID_MANFID_SANDISK_SD, 0x5344, add_quirk_sd,
+		  MMC_QUIRK_BROKEN_SD_DISCARD),
+
+	/*
 	 *  On some Kingston SD cards, multiple erases of less than 64
 	 *  sectors can cause corruption.
 	 */
@@ -153,6 +196,32 @@ static const struct mmc_fixup __maybe_unused sdio_fixup_methods[] = {
 	END_FIXUP
 };
 
+static const struct mmc_fixup __maybe_unused sdio_card_init_methods[] = {
+	SDIO_FIXUP_COMPATIBLE("ti,wl1251", wl1251_quirk, 0),
+
+	SDIO_FIXUP_COMPATIBLE("silabs,wf200", add_quirk,
+			      MMC_QUIRK_BROKEN_BYTE_MODE_512 |
+			      MMC_QUIRK_LENIENT_FN0 |
+			      MMC_QUIRK_BLKSZ_FOR_BYTE_MODE),
+
+	END_FIXUP
+};
+
+static inline bool mmc_fixup_of_compatible_match(struct mmc_card *card,
+						 const char *compatible)
+{
+	struct device_node *np;
+
+	for_each_child_of_node(mmc_dev(card->host)->of_node, np) {
+		if (of_device_is_compatible(np, compatible)) {
+			of_node_put(np);
+			return true;
+		}
+	}
+
+	return false;
+}
+
 static inline void mmc_fixup_device(struct mmc_card *card,
 				    const struct mmc_fixup *table)
 {
@@ -160,22 +229,36 @@ static inline void mmc_fixup_device(struct mmc_card *card,
 	u64 rev = cid_rev_card(card);
 
 	for (f = table; f->vendor_fixup; f++) {
-		if ((f->manfid == CID_MANFID_ANY ||
-		     f->manfid == card->cid.manfid) &&
-		    (f->oemid == CID_OEMID_ANY ||
-		     f->oemid == card->cid.oemid) &&
-		    (f->name == CID_NAME_ANY ||
-		     !strncmp(f->name, card->cid.prod_name,
-			      sizeof(card->cid.prod_name))) &&
-		    (f->cis_vendor == card->cis.vendor ||
-		     f->cis_vendor == (u16) SDIO_ANY_ID) &&
-		    (f->cis_device == card->cis.device ||
-		     f->cis_device == (u16) SDIO_ANY_ID) &&
-		    (f->ext_csd_rev == EXT_CSD_REV_ANY ||
-		     f->ext_csd_rev == card->ext_csd.rev) &&
-		    rev >= f->rev_start && rev <= f->rev_end) {
-			dev_dbg(&card->dev, "calling %ps\n", f->vendor_fixup);
-			f->vendor_fixup(card, f->data);
-		}
+		if (f->manfid != CID_MANFID_ANY &&
+		    f->manfid != card->cid.manfid)
+			continue;
+		if (f->oemid != CID_OEMID_ANY &&
+		    f->oemid != card->cid.oemid)
+			continue;
+		if (f->name != CID_NAME_ANY &&
+		    strncmp(f->name, card->cid.prod_name,
+			    sizeof(card->cid.prod_name)))
+			continue;
+		if (f->cis_vendor != (u16)SDIO_ANY_ID &&
+		    f->cis_vendor != card->cis.vendor)
+			continue;
+		if (f->cis_device != (u16)SDIO_ANY_ID &&
+		    f->cis_device != card->cis.device)
+			continue;
+		if (f->ext_csd_rev != EXT_CSD_REV_ANY &&
+		    f->ext_csd_rev != card->ext_csd.rev)
+			continue;
+		if (rev < f->rev_start || rev > f->rev_end)
+			continue;
+		if (f->of_compatible &&
+		    !mmc_fixup_of_compatible_match(card, f->of_compatible))
+			continue;
+		if (f->year != CID_YEAR_ANY && f->year != card->cid.year)
+			continue;
+		if (f->month != CID_MONTH_ANY && f->month != card->cid.month)
+			continue;
+
+		dev_dbg(&card->dev, "calling %ps\n", f->vendor_fixup);
+		f->vendor_fixup(card, f->data);
 	}
 }

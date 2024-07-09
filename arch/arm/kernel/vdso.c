@@ -50,15 +50,6 @@ static const struct vm_special_mapping vdso_data_mapping = {
 static int vdso_mremap(const struct vm_special_mapping *sm,
 		struct vm_area_struct *new_vma)
 {
-	unsigned long new_size = new_vma->vm_end - new_vma->vm_start;
-	unsigned long vdso_size;
-
-	/* without VVAR page */
-	vdso_size = (vdso_total_pages - 1) << PAGE_SHIFT;
-
-	if (vdso_size != new_size)
-		return -EINVAL;
-
 	current->mm->context.vdso = new_vma->vm_start;
 
 	return 0;
@@ -144,7 +135,7 @@ static Elf32_Sym * __init find_symbol(struct elfinfo *lib, const char *symname)
 
 		if (lib->dynsym[i].st_name == 0)
 			continue;
-		strlcpy(name, lib->dynstr + lib->dynsym[i].st_name,
+		strscpy(name, lib->dynstr + lib->dynsym[i].st_name,
 			MAX_SYMNAME);
 		c = strchr(name, '@');
 		if (c)

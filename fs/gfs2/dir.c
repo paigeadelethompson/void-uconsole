@@ -130,7 +130,7 @@ static int gfs2_dir_write_stuffed(struct gfs2_inode *ip, const char *buf,
 	memcpy(dibh->b_data + offset + sizeof(struct gfs2_dinode), buf, size);
 	if (ip->i_inode.i_size < offset + size)
 		i_size_write(&ip->i_inode, offset + size);
-	ip->i_inode.i_mtime = ip->i_inode.i_ctime = current_time(&ip->i_inode);
+	ip->i_inode.i_mtime = inode_set_ctime_current(&ip->i_inode);
 	gfs2_dinode_out(ip, dibh->b_data);
 
 	brelse(dibh);
@@ -159,7 +159,7 @@ static int gfs2_dir_write_data(struct gfs2_inode *ip, const char *buf,
 	unsigned int o;
 	int copied = 0;
 	int error = 0;
-	int new = 0;
+	bool new = false;
 
 	if (!size)
 		return 0;
@@ -172,7 +172,7 @@ static int gfs2_dir_write_data(struct gfs2_inode *ip, const char *buf,
 		return -EINVAL;
 
 	if (gfs2_is_stuffed(ip)) {
-		error = gfs2_unstuff_dinode(ip, NULL);
+		error = gfs2_unstuff_dinode(ip);
 		if (error)
 			return error;
 	}
@@ -189,9 +189,9 @@ static int gfs2_dir_write_data(struct gfs2_inode *ip, const char *buf,
 			amount = sdp->sd_sb.sb_bsize - o;
 
 		if (!extlen) {
-			new = 1;
-			error = gfs2_extent_map(&ip->i_inode, lblock, &new,
-						&dblock, &extlen);
+			extlen = 1;
+			error = gfs2_alloc_extent(&ip->i_inode, lblock, &dblock,
+						  &extlen, &new);
 			if (error)
 				goto fail;
 			error = -EIO;
@@ -227,7 +227,7 @@ out:
 
 	if (ip->i_inode.i_size < offset + copied)
 		i_size_write(&ip->i_inode, offset + copied);
-	ip->i_inode.i_mtime = ip->i_inode.i_ctime = current_time(&ip->i_inode);
+	ip->i_inode.i_mtime = inode_set_ctime_current(&ip->i_inode);
 
 	gfs2_trans_add_meta(ip->i_gl, dibh);
 	gfs2_dinode_out(ip, dibh->b_data);
@@ -286,15 +286,14 @@ static int gfs2_dir_read_data(struct gfs2_inode *ip, __be64 *buf,
 	while (copied < size) {
 		unsigned int amount;
 		struct buffer_head *bh;
-		int new;
 
 		amount = size - copied;
 		if (amount > sdp->sd_sb.sb_bsize - o)
 			amount = sdp->sd_sb.sb_bsize - o;
 
 		if (!extlen) {
-			new = 0;
-			error = gfs2_extent_map(&ip->i_inode, lblock, &new,
+			extlen = 32;
+			error = gfs2_get_extent(&ip->i_inode, lblock,
 						&dblock, &extlen);
 			if (error || !dblock)
 				goto fail;
@@ -770,14 +769,13 @@ static int get_leaf(struct gfs2_inode *dip, u64 leaf_no,
 /**
  * get_leaf_nr - Get a leaf number associated with the index
  * @dip: The GFS2 inode
- * @index:
- * @leaf_out:
+ * @index: hash table index of the targeted leaf
+ * @leaf_out: Resulting leaf block number
  *
  * Returns: 0 on success, error code otherwise
  */
 
-static int get_leaf_nr(struct gfs2_inode *dip, u32 index,
-		       u64 *leaf_out)
+static int get_leaf_nr(struct gfs2_inode *dip, u32 index, u64 *leaf_out)
 {
 	__be64 *hash;
 	int error;
@@ -870,7 +868,7 @@ static struct gfs2_leaf *new_leaf(struct inode *inode, struct buffer_head **pbh,
 	struct gfs2_dirent *dent;
 	struct timespec64 tv = current_time(inode);
 
-	error = gfs2_alloc_blocks(ip, &bn, &n, 0, NULL);
+	error = gfs2_alloc_blocks(ip, &bn, &n, 0);
 	if (error)
 		return NULL;
 	bh = gfs2_meta_new(ip->i_gl, bn);
@@ -898,7 +896,7 @@ static struct gfs2_leaf *new_leaf(struct inode *inode, struct buffer_head **pbh,
 
 /**
  * dir_make_exhash - Convert a stuffed directory into an ExHash directory
- * @dip: The GFS2 inode
+ * @inode: The directory inode to be converted to exhash
  *
  * Returns: 0 on success, error code otherwise
  */
@@ -991,9 +989,8 @@ static int dir_make_exhash(struct inode *inode)
 
 /**
  * dir_split_leaf - Split a leaf block into two
- * @dip: The GFS2 inode
- * @index:
- * @leaf_no:
+ * @inode: The directory inode to be split
+ * @name: name of the dirent we're trying to insert
  *
  * Returns: 0 on success, error code on failure
  */
@@ -1252,6 +1249,7 @@ static int compare_dents(const void *a, const void *b)
  * @ctx: what to feed the entries to
  * @darr: an array of struct gfs2_dirent pointers to read
  * @entries: the number of entries in darr
+ * @sort_start: index of the directory array to start our sort
  * @copied: pointer to int that's non-zero if a entry has been copied out
  *
  * Jump through some hoops to make sure that if there are hash collsions,
@@ -1468,6 +1466,10 @@ out:
 
 /**
  * gfs2_dir_readahead - Issue read-ahead requests for leaf blocks.
+ * @inode: the directory inode
+ * @hsize: hash table size
+ * @index: index into the hash table
+ * @f_ra: read-ahead parameters
  *
  * Note: we can't calculate each index like dir_e_read can because we don't
  * have the leaf, and therefore we don't have the depth, and therefore we
@@ -1506,9 +1508,8 @@ static void gfs2_dir_readahead(struct inode *inode, unsigned hsize, u32 index,
 				continue;
 			}
 			bh->b_end_io = end_buffer_read_sync;
-			submit_bh(REQ_OP_READ,
-				  REQ_RAHEAD | REQ_META | REQ_PRIO,
-				  bh);
+			submit_bh(REQ_OP_READ | REQ_RAHEAD | REQ_META |
+				  REQ_PRIO, bh);
 			continue;
 		}
 		brelse(bh);
@@ -1517,8 +1518,9 @@ static void gfs2_dir_readahead(struct inode *inode, unsigned hsize, u32 index,
 
 /**
  * dir_e_read - Reads the entries from a directory into a filldir buffer
- * @dip: dinode pointer
+ * @inode: the directory inode
  * @ctx: actor to feed the entries to
+ * @f_ra: read-ahead parameters
  *
  * Returns: errno
  */
@@ -1627,7 +1629,7 @@ out:
 
 /**
  * gfs2_dir_search - Search a directory
- * @dip: The GFS2 dir inode
+ * @dir: The GFS2 directory inode
  * @name: The name we are looking up
  * @fail_on_exist: Fail if the name exists rather than looking it up
  *
@@ -1812,7 +1814,7 @@ int gfs2_dir_add(struct inode *inode, const struct qstr *name,
 			gfs2_inum_out(nip, dent);
 			dent->de_type = cpu_to_be16(IF2DT(nip->i_inode.i_mode));
 			dent->de_rahead = cpu_to_be16(gfs2_inode_ra_len(nip));
-			tv = current_time(&ip->i_inode);
+			tv = inode_set_ctime_current(&ip->i_inode);
 			if (ip->i_diskflags & GFS2_DIF_EXHASH) {
 				leaf = (struct gfs2_leaf *)bh->b_data;
 				be16_add_cpu(&leaf->lf_entries, 1);
@@ -1823,7 +1825,7 @@ int gfs2_dir_add(struct inode *inode, const struct qstr *name,
 			da->bh = NULL;
 			brelse(bh);
 			ip->i_entries++;
-			ip->i_inode.i_mtime = ip->i_inode.i_ctime = tv;
+			ip->i_inode.i_mtime = tv;
 			if (S_ISDIR(nip->i_inode.i_mode))
 				inc_nlink(&ip->i_inode);
 			mark_inode_dirty(inode);
@@ -1864,7 +1866,7 @@ int gfs2_dir_add(struct inode *inode, const struct qstr *name,
 /**
  * gfs2_dir_del - Delete a directory entry
  * @dip: The GFS2 inode
- * @filename: The filename
+ * @dentry: The directory entry we want to delete
  *
  * Returns: 0 on success, error code on failure
  */
@@ -1874,7 +1876,7 @@ int gfs2_dir_del(struct gfs2_inode *dip, const struct dentry *dentry)
 	const struct qstr *name = &dentry->d_name;
 	struct gfs2_dirent *dent, *prev = NULL;
 	struct buffer_head *bh;
-	struct timespec64 tv = current_time(&dip->i_inode);
+	struct timespec64 tv;
 
 	/* Returns _either_ the entry (if its first in block) or the
 	   previous entry otherwise */
@@ -1894,6 +1896,7 @@ int gfs2_dir_del(struct gfs2_inode *dip, const struct dentry *dentry)
 	}
 
 	dirent_del(dip, bh, prev, dent);
+	tv = inode_set_ctime_current(&dip->i_inode);
 	if (dip->i_diskflags & GFS2_DIF_EXHASH) {
 		struct gfs2_leaf *leaf = (struct gfs2_leaf *)bh->b_data;
 		u16 entries = be16_to_cpu(leaf->lf_entries);
@@ -1908,7 +1911,7 @@ int gfs2_dir_del(struct gfs2_inode *dip, const struct dentry *dentry)
 	if (!dip->i_entries)
 		gfs2_consist_inode(dip);
 	dip->i_entries--;
-	dip->i_inode.i_mtime = dip->i_inode.i_ctime = tv;
+	dip->i_inode.i_mtime =  tv;
 	if (d_is_dir(dentry))
 		drop_nlink(&dip->i_inode);
 	mark_inode_dirty(&dip->i_inode);
@@ -1918,9 +1921,10 @@ int gfs2_dir_del(struct gfs2_inode *dip, const struct dentry *dentry)
 
 /**
  * gfs2_dir_mvino - Change inode number of directory entry
- * @dip: The GFS2 inode
- * @filename:
- * @new_inode:
+ * @dip: The GFS2 directory inode
+ * @filename: the filename to be moved
+ * @nip: the new GFS2 inode
+ * @new_type: the de_type of the new dirent
  *
  * This routine changes the inode number of a directory entry.  It's used
  * by rename to change ".." when a directory is moved.
@@ -1948,7 +1952,7 @@ int gfs2_dir_mvino(struct gfs2_inode *dip, const struct qstr *filename,
 	dent->de_type = cpu_to_be16(new_type);
 	brelse(bh);
 
-	dip->i_inode.i_mtime = dip->i_inode.i_ctime = current_time(&dip->i_inode);
+	dip->i_inode.i_mtime = inode_set_ctime_current(&dip->i_inode);
 	mark_inode_dirty_sync(&dip->i_inode);
 	return 0;
 }
@@ -1960,7 +1964,7 @@ int gfs2_dir_mvino(struct gfs2_inode *dip, const struct qstr *filename,
  * @len: the number of pointers to this leaf
  * @leaf_no: the leaf number
  * @leaf_bh: buffer_head for the starting leaf
- * last_dealloc: 1 if this is the final dealloc for the leaf, else 0
+ * @last_dealloc: 1 if this is the final dealloc for the leaf, else 0
  *
  * Returns: errno
  */
@@ -2013,7 +2017,7 @@ static int leaf_dealloc(struct gfs2_inode *dip, u32 index, u32 len,
 		l_blocks++;
 	}
 
-	gfs2_rlist_alloc(&rlist);
+	gfs2_rlist_alloc(&rlist, LM_ST_EXCLUSIVE, LM_FLAG_NODE_SCOPE);
 
 	for (x = 0; x < rlist.rl_rgrps; x++) {
 		struct gfs2_rgrpd *rgd = gfs2_glock2rgrp(rlist.rl_ghs[x].gh_gl);
@@ -2142,8 +2146,8 @@ out:
 
 /**
  * gfs2_diradd_alloc_required - find if adding entry will require an allocation
- * @ip: the file being written to
- * @filname: the filename that's going to be added
+ * @inode: the directory inode being written to
+ * @name: the filename that's going to be added
  * @da: The structure to return dir alloc info
  *
  * Returns: 0 if ok, -ve on error

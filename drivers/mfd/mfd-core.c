@@ -33,39 +33,30 @@ static struct device_type mfd_dev_type = {
 	.name	= "mfd_device",
 };
 
-int mfd_cell_enable(struct platform_device *pdev)
-{
-	const struct mfd_cell *cell = mfd_get_cell(pdev);
-
-	if (!cell->enable) {
-		dev_dbg(&pdev->dev, "No .enable() call-back registered\n");
-		return 0;
-	}
-
-	return cell->enable(pdev);
-}
-EXPORT_SYMBOL(mfd_cell_enable);
-
-int mfd_cell_disable(struct platform_device *pdev)
-{
-	const struct mfd_cell *cell = mfd_get_cell(pdev);
-
-	if (!cell->disable) {
-		dev_dbg(&pdev->dev, "No .disable() call-back registered\n");
-		return 0;
-	}
-
-	return cell->disable(pdev);
-}
-EXPORT_SYMBOL(mfd_cell_disable);
-
 #if IS_ENABLED(CONFIG_ACPI)
+struct match_ids_walk_data {
+	struct acpi_device_id *ids;
+	struct acpi_device *adev;
+};
+
+static int match_device_ids(struct acpi_device *adev, void *data)
+{
+	struct match_ids_walk_data *wd = data;
+
+	if (!acpi_match_device_ids(adev, wd->ids)) {
+		wd->adev = adev;
+		return 1;
+	}
+
+	return 0;
+}
+
 static void mfd_acpi_add_device(const struct mfd_cell *cell,
 				struct platform_device *pdev)
 {
 	const struct mfd_cell_acpi_match *match = cell->acpi_match;
-	struct acpi_device *parent, *child;
-	struct acpi_device *adev;
+	struct acpi_device *adev = NULL;
+	struct acpi_device *parent;
 
 	parent = ACPI_COMPANION(pdev->dev.parent);
 	if (!parent)
@@ -77,38 +68,26 @@ static void mfd_acpi_add_device(const struct mfd_cell *cell,
 	 * _ADR or it will use the parent handle if is no ID is given.
 	 *
 	 * Note that use of _ADR is a grey area in the ACPI specification,
-	 * though Intel Galileo Gen2 is using it to distinguish the children
-	 * devices.
+	 * though at least Intel Galileo Gen 2 is using it to distinguish
+	 * the children devices.
 	 */
-	adev = parent;
 	if (match) {
 		if (match->pnpid) {
 			struct acpi_device_id ids[2] = {};
+			struct match_ids_walk_data wd = {
+				.adev = NULL,
+				.ids = ids,
+			};
 
-			strlcpy(ids[0].id, match->pnpid, sizeof(ids[0].id));
-			list_for_each_entry(child, &parent->children, node) {
-				if (!acpi_match_device_ids(child, ids)) {
-					adev = child;
-					break;
-				}
-			}
+			strscpy(ids[0].id, match->pnpid, sizeof(ids[0].id));
+			acpi_dev_for_each_child(parent, match_device_ids, &wd);
+			adev = wd.adev;
 		} else {
-			unsigned long long adr;
-			acpi_status status;
-
-			list_for_each_entry(child, &parent->children, node) {
-				status = acpi_evaluate_integer(child->handle,
-							       "_ADR", NULL,
-							       &adr);
-				if (ACPI_SUCCESS(status) && match->adr == adr) {
-					adev = child;
-					break;
-				}
-			}
+			adev = acpi_find_child_device(parent, match->adr, false);
 		}
 	}
 
-	ACPI_COMPANION_SET(&pdev->dev, adev);
+	ACPI_COMPANION_SET(&pdev->dev, adev ?: parent);
 }
 #else
 static inline void mfd_acpi_add_device(const struct mfd_cell *cell,
@@ -123,7 +102,6 @@ static int mfd_match_of_node_to_dev(struct platform_device *pdev,
 {
 #if IS_ENABLED(CONFIG_OF)
 	struct mfd_of_node_entry *of_entry;
-	const __be32 *reg;
 	u64 of_node_addr;
 
 	/* Skip if OF node has previously been allocated to a device */
@@ -136,12 +114,9 @@ static int mfd_match_of_node_to_dev(struct platform_device *pdev,
 		goto allocate_of_node;
 
 	/* We only care about each node's first defined address */
-	reg = of_get_address(np, 0, NULL, NULL);
-	if (!reg)
+	if (of_property_read_reg(np, 0, &of_node_addr, NULL))
 		/* OF node does not contatin a 'reg' property to match to */
 		return -EAGAIN;
-
-	of_node_addr = of_read_number(reg, of_n_addr_cells(np));
 
 	if (cell->of_reg != of_node_addr)
 		/* No match */
@@ -171,6 +146,7 @@ static int mfd_add_device(struct device *parent, int id,
 	struct platform_device *pdev;
 	struct device_node *np = NULL;
 	struct mfd_of_node_entry *of_entry, *tmp;
+	bool disabled = false;
 	int ret = -ENOMEM;
 	int platform_id;
 	int r;
@@ -208,22 +184,30 @@ static int mfd_add_device(struct device *parent, int id,
 	if (IS_ENABLED(CONFIG_OF) && parent->of_node && cell->of_compatible) {
 		for_each_child_of_node(parent->of_node, np) {
 			if (of_device_is_compatible(np, cell->of_compatible)) {
-				/* Ignore 'disabled' devices error free */
+				/* Skip 'disabled' devices */
 				if (!of_device_is_available(np)) {
-					ret = 0;
-					goto fail_alias;
+					disabled = true;
+					continue;
 				}
 
 				ret = mfd_match_of_node_to_dev(pdev, np, cell);
 				if (ret == -EAGAIN)
 					continue;
+				of_node_put(np);
 				if (ret)
 					goto fail_alias;
 
-				break;
+				goto match;
 			}
 		}
 
+		if (disabled) {
+			/* Ignore 'disabled' devices error free */
+			ret = 0;
+			goto fail_alias;
+		}
+
+match:
 		if (!pdev->dev.of_node)
 			pr_warn("%s: Failed to locate of_node [id: %d]\n",
 				cell->name, platform_id);
@@ -238,8 +222,8 @@ static int mfd_add_device(struct device *parent, int id,
 			goto fail_of_entry;
 	}
 
-	if (cell->properties) {
-		ret = platform_device_add_properties(pdev, cell->properties);
+	if (cell->swnode) {
+		ret = device_add_software_node(&pdev->dev, cell->swnode);
 		if (ret)
 			goto fail_of_entry;
 	}
@@ -278,18 +262,18 @@ static int mfd_add_device(struct device *parent, int id,
 			if (has_acpi_companion(&pdev->dev)) {
 				ret = acpi_check_resource_conflict(&res[r]);
 				if (ret)
-					goto fail_of_entry;
+					goto fail_res_conflict;
 			}
 		}
 	}
 
 	ret = platform_device_add_resources(pdev, res, cell->num_resources);
 	if (ret)
-		goto fail_of_entry;
+		goto fail_res_conflict;
 
 	ret = platform_device_add(pdev);
 	if (ret)
-		goto fail_of_entry;
+		goto fail_res_conflict;
 
 	if (cell->pm_runtime_no_callbacks)
 		pm_runtime_no_callbacks(&pdev->dev);
@@ -298,6 +282,9 @@ static int mfd_add_device(struct device *parent, int id,
 
 	return 0;
 
+fail_res_conflict:
+	if (cell->swnode)
+		device_remove_software_node(&pdev->dev);
 fail_of_entry:
 	list_for_each_entry_safe(of_entry, tmp, &mfd_of_node_list, list)
 		if (of_entry->dev == &pdev->dev) {
@@ -358,6 +345,7 @@ static int mfd_remove_devices_fn(struct device *dev, void *data)
 {
 	struct platform_device *pdev;
 	const struct mfd_cell *cell;
+	struct mfd_of_node_entry *of_entry, *tmp;
 	int *level = data;
 
 	if (dev->type != &mfd_dev_type)
@@ -368,6 +356,15 @@ static int mfd_remove_devices_fn(struct device *dev, void *data)
 
 	if (level && cell->level > *level)
 		return 0;
+
+	if (cell->swnode)
+		device_remove_software_node(&pdev->dev);
+
+	list_for_each_entry_safe(of_entry, tmp, &mfd_of_node_list, list)
+		if (of_entry->dev == &pdev->dev) {
+			list_del(&of_entry->list);
+			kfree(of_entry);
+		}
 
 	regulator_bulk_unregister_supply_alias(dev, cell->parent_supplies,
 					       cell->num_parent_supplies);

@@ -2,7 +2,7 @@
 /*
  * HDMI interface DSS driver for TI's OMAP4 family of SoCs.
  *
- * Copyright (C) 2010-2011 Texas Instruments Incorporated - http://www.ti.com/
+ * Copyright (C) 2010-2011 Texas Instruments Incorporated - https://www.ti.com/
  * Authors: Yong Zhi
  *	Mythri pk <mythripk@ti.com>
  */
@@ -29,6 +29,7 @@
 
 #include <drm/drm_atomic.h>
 #include <drm/drm_atomic_state_helper.h>
+#include <drm/drm_edid.h>
 
 #include "omapdss.h"
 #include "hdmi4_core.h"
@@ -43,10 +44,10 @@ static int hdmi_runtime_get(struct omap_hdmi *hdmi)
 	DSSDBG("hdmi_runtime_get\n");
 
 	r = pm_runtime_get_sync(&hdmi->pdev->dev);
-	WARN_ON(r < 0);
-	if (r < 0)
+	if (WARN_ON(r < 0)) {
+		pm_runtime_put_noidle(&hdmi->pdev->dev);
 		return r;
-
+	}
 	return 0;
 }
 
@@ -707,7 +708,6 @@ static int hdmi4_init_output(struct omap_hdmi *hdmi)
 	out->type = OMAP_DISPLAY_TYPE_HDMI;
 	out->name = "hdmi.0";
 	out->dispc_channel = OMAP_DSS_CHANNEL_DIGIT;
-	out->owner = THIS_MODULE;
 	out->of_port = 0;
 
 	r = omapdss_device_init_output(out, &hdmi->bridge);
@@ -824,7 +824,7 @@ err_free:
 	return r;
 }
 
-static int hdmi4_remove(struct platform_device *pdev)
+static void hdmi4_remove(struct platform_device *pdev)
 {
 	struct omap_hdmi *hdmi = platform_get_drvdata(pdev);
 
@@ -835,7 +835,6 @@ static int hdmi4_remove(struct platform_device *pdev)
 	pm_runtime_disable(&pdev->dev);
 
 	kfree(hdmi);
-	return 0;
 }
 
 static const struct of_device_id hdmi_of_match[] = {
@@ -845,7 +844,7 @@ static const struct of_device_id hdmi_of_match[] = {
 
 struct platform_driver omapdss_hdmi4hw_driver = {
 	.probe		= hdmi4_probe,
-	.remove		= hdmi4_remove,
+	.remove_new	= hdmi4_remove,
 	.driver         = {
 		.name   = "omapdss_hdmi",
 		.of_match_table = hdmi_of_match,

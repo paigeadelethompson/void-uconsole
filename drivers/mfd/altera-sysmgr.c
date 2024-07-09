@@ -14,8 +14,7 @@
 #include <linux/mfd/syscon.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_address.h>
-#include <linux/of_platform.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/slab.h>
 
@@ -110,7 +109,9 @@ struct regmap *altr_sysmgr_regmap_lookup_by_phandle(struct device_node *np,
 
 	dev = driver_find_device_by_of_node(&altr_sysmgr_driver.driver,
 					    (void *)sysmgr_np);
-	of_node_put(sysmgr_np);
+	if (property)
+		of_node_put(sysmgr_np);
+
 	if (!dev)
 		return ERR_PTR(-EPROBE_DEFER);
 
@@ -145,14 +146,15 @@ static int sysmgr_probe(struct platform_device *pdev)
 		sysmgr_config.reg_write = s10_protected_reg_write;
 
 		/* Need physical address for SMCC call */
-		regmap = devm_regmap_init(dev, NULL, (void *)res->start,
+		regmap = devm_regmap_init(dev, NULL,
+					  (void *)(uintptr_t)res->start,
 					  &sysmgr_config);
 	} else {
 		base = devm_ioremap(dev, res->start, resource_size(res));
 		if (!base)
 			return -ENOMEM;
 
-		sysmgr_config.max_register = res->end - res->start - 3;
+		sysmgr_config.max_register = resource_size(res) - 4;
 		regmap = devm_regmap_init_mmio(dev, base, &sysmgr_config);
 	}
 
@@ -197,4 +199,3 @@ module_exit(altr_sysmgr_exit);
 
 MODULE_AUTHOR("Thor Thayer <>");
 MODULE_DESCRIPTION("SOCFPGA System Manager driver");
-MODULE_LICENSE("GPL v2");

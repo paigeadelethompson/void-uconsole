@@ -38,7 +38,6 @@
 #include <linux/io.h>
 #include <linux/iopoll.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/scatterlist.h>
@@ -327,15 +326,12 @@ static void bcm2835_dma_complete(void *param)
 
 static void bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 {
-	unsigned long flags;
 	size_t blksize;
 	unsigned long wait_max;
 
 	blksize = host->data->blksz;
 
 	wait_max = jiffies + msecs_to_jiffies(500);
-
-	local_irq_save(flags);
 
 	while (blksize) {
 		int copy_words;
@@ -421,8 +417,6 @@ static void bcm2835_transfer_block_pio(struct bcm2835_host *host, bool is_read)
 	}
 
 	sg_miter_stop(&host->sg_miter);
-
-	local_irq_restore(flags);
 }
 
 static void bcm2835_transfer_pio(struct bcm2835_host *host)
@@ -1068,7 +1062,6 @@ static void bcm2835_dma_complete_work(struct work_struct *work)
 	}
 
 	if (host->drain_words) {
-		unsigned long flags;
 		void *page;
 		u32 *buf;
 
@@ -1076,8 +1069,7 @@ static void bcm2835_dma_complete_work(struct work_struct *work)
 			host->drain_page += host->drain_offset >> PAGE_SHIFT;
 			host->drain_offset &= ~PAGE_MASK;
 		}
-		local_irq_save(flags);
-		page = kmap_atomic(host->drain_page);
+		page = kmap_local_page(host->drain_page);
 		buf = page + host->drain_offset;
 
 		while (host->drain_words) {
@@ -1088,8 +1080,7 @@ static void bcm2835_dma_complete_work(struct work_struct *work)
 			host->drain_words--;
 		}
 
-		kunmap_atomic(page);
-		local_irq_restore(flags);
+		kunmap_local(page);
 	}
 
 	bcm2835_finish_data(host);
@@ -1259,7 +1250,7 @@ static void bcm2835_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 static const struct mmc_host_ops bcm2835_ops = {
 	.request = bcm2835_request,
 	.set_ios = bcm2835_set_ios,
-	.hw_reset = bcm2835_reset,
+	.card_hw_reset = bcm2835_reset,
 };
 
 static int bcm2835_add_host(struct bcm2835_host *host)
@@ -1293,14 +1284,12 @@ static int bcm2835_add_host(struct bcm2835_host *host)
 
 		host->dma_cfg_tx.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
 		host->dma_cfg_tx.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
-		host->dma_cfg_tx.slave_id = 13;		/* DREQ channel */
 		host->dma_cfg_tx.direction = DMA_MEM_TO_DEV;
 		host->dma_cfg_tx.src_addr = 0;
 		host->dma_cfg_tx.dst_addr = host->phys_addr + SDDATA;
 
 		host->dma_cfg_rx.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
 		host->dma_cfg_rx.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
-		host->dma_cfg_rx.slave_id = 13;		/* DREQ channel */
 		host->dma_cfg_rx.direction = DMA_DEV_TO_MEM;
 		host->dma_cfg_rx.src_addr = host->phys_addr + SDDATA;
 		host->dma_cfg_rx.dst_addr = 0;
@@ -1357,8 +1346,8 @@ static int bcm2835_probe(struct platform_device *pdev)
 	struct device *dev = &pdev->dev;
 	struct clk *clk;
 	struct bcm2835_host *host;
+	struct resource *iomem;
 	struct mmc_host *mmc;
-	const __be32 *regaddr_p;
 	int ret;
 
 	dev_dbg(dev, "%s\n", __func__);
@@ -1371,23 +1360,13 @@ static int bcm2835_probe(struct platform_device *pdev)
 	host->pdev = pdev;
 	spin_lock_init(&host->lock);
 
-	host->ioaddr = devm_platform_ioremap_resource(pdev, 0);
+	host->ioaddr = devm_platform_get_and_ioremap_resource(pdev, 0, &iomem);
 	if (IS_ERR(host->ioaddr)) {
 		ret = PTR_ERR(host->ioaddr);
 		goto err;
 	}
 
-	/* Parse OF address directly to get the physical address for
-	 * DMA to our registers.
-	 */
-	regaddr_p = of_get_address(pdev->dev.of_node, 0, NULL, NULL);
-	if (!regaddr_p) {
-		dev_err(dev, "Can't get phys address\n");
-		ret = -EINVAL;
-		goto err;
-	}
-
-	host->phys_addr = be32_to_cpup(regaddr_p);
+	host->phys_addr = iomem->start;
 
 	host->dma_chan = NULL;
 	host->dma_desc = NULL;
@@ -1413,8 +1392,8 @@ static int bcm2835_probe(struct platform_device *pdev)
 	host->max_clk = clk_get_rate(clk);
 
 	host->irq = platform_get_irq(pdev, 0);
-	if (host->irq <= 0) {
-		ret = -EINVAL;
+	if (host->irq < 0) {
+		ret = host->irq;
 		goto err;
 	}
 
@@ -1441,7 +1420,7 @@ err:
 	return ret;
 }
 
-static int bcm2835_remove(struct platform_device *pdev)
+static void bcm2835_remove(struct platform_device *pdev)
 {
 	struct bcm2835_host *host = platform_get_drvdata(pdev);
 	struct mmc_host *mmc = mmc_from_priv(host);
@@ -1459,8 +1438,6 @@ static int bcm2835_remove(struct platform_device *pdev)
 		dma_release_channel(host->dma_chan_rxtx);
 
 	mmc_free_host(mmc);
-
-	return 0;
 }
 
 static const struct of_device_id bcm2835_match[] = {
@@ -1471,7 +1448,7 @@ MODULE_DEVICE_TABLE(of, bcm2835_match);
 
 static struct platform_driver bcm2835_driver = {
 	.probe      = bcm2835_probe,
-	.remove     = bcm2835_remove,
+	.remove_new = bcm2835_remove,
 	.driver     = {
 		.name		= "sdhost-bcm2835",
 		.probe_type	= PROBE_PREFER_ASYNCHRONOUS,

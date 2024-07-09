@@ -888,19 +888,19 @@ static const int pwr_mode_values[] = {
 		0x70,
 	};
 
-static const SOC_VALUE_ENUM_SINGLE_DECL(pwr_mode_ctrl,
+static SOC_VALUE_ENUM_SINGLE_DECL(pwr_mode_ctrl,
 	ma_pm_man__a, 0, 0x70,
 	pwr_mode_texts,
 	pwr_mode_values);
 
-static const DECLARE_TLV_DB_SCALE(ma120x0p_vol_tlv, -5000, 100,  0);
+static const DECLARE_TLV_DB_SCALE(ma120x0p_vol_tlv, -14400, 100,  0);
 static const DECLARE_TLV_DB_SCALE(ma120x0p_lim_tlv, -5000, 100,  0);
 static const DECLARE_TLV_DB_SCALE(ma120x0p_lr_tlv, -5000, 100,  0);
 
 static const struct snd_kcontrol_new ma120x0p_snd_controls[] = {
 	//Master Volume
 	SOC_SINGLE_RANGE_TLV("A.Mstr Vol Volume",
-		ma_vol_db_master__a, 0, 0x18, 0x4a, 1, ma120x0p_vol_tlv),
+		ma_vol_db_master__a, 0, 0x18, 0xa8, 1, ma120x0p_vol_tlv),
 
 	//L-R Volume ch0
 	SOC_SINGLE_RANGE_TLV("B.L Vol Volume",
@@ -1002,7 +1002,7 @@ static struct snd_soc_dai_driver ma120x0p_dai = {
 		.channels_max	= 2,
 		.rates = SNDRV_PCM_RATE_CONTINUOUS,
 		.rate_min = 44100,
-		.rate_max = 96000,
+		.rate_max = 192000,
 		.formats = SNDRV_PCM_FMTBIT_S24_LE | SNDRV_PCM_FMTBIT_S32_LE
 	},
 	.ops        = &ma120x0p_dai_ops,
@@ -1179,7 +1179,6 @@ static const struct snd_soc_component_driver ma120x0p_component_driver = {
 	.num_controls = ARRAY_SIZE(ma120x0p_snd_controls),
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
 //I2C Driver
@@ -1216,8 +1215,7 @@ static struct regmap_config ma120x0p_regmap_config = {
 	.num_reg_defaults = ARRAY_SIZE(ma120x0p_reg_defaults),
 };
 
-static int ma120x0p_i2c_probe(struct i2c_client *i2c,
-	const struct i2c_device_id *id)
+static int ma120x0p_i2c_probe(struct i2c_client *i2c)
 {
 	int ret;
 
@@ -1309,7 +1307,7 @@ static irqreturn_t ma120x0p_irq_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
-static int ma120x0p_i2c_remove(struct i2c_client *i2c)
+static void ma120x0p_i2c_remove(struct i2c_client *i2c)
 {
 	snd_soc_unregister_component(&i2c->dev);
 	i2c_set_clientdata(i2c, NULL);
@@ -1322,8 +1320,6 @@ static int ma120x0p_i2c_remove(struct i2c_client *i2c)
 	msleep(200);
 
 	kfree(priv_data);
-
-	return 0;
 }
 
 static void ma120x0p_i2c_shutdown(struct i2c_client *i2c)

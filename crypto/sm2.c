@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-or-later */
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * SM2 asymmetric public-key algorithm
  * as specified by OSCCA GM/T 0003.1-2012 -- 0003.5-2012 SM2 and
@@ -13,10 +13,13 @@
 #include <crypto/internal/akcipher.h>
 #include <crypto/akcipher.h>
 #include <crypto/hash.h>
-#include <crypto/sm3_base.h>
 #include <crypto/rng.h>
 #include <crypto/sm2.h>
 #include "sm2signature.asn1.h"
+
+/* The default user id as specified in GM/T 0009-2012 */
+#define SM2_DEFAULT_USERID "1234567812345678"
+#define SM2_DEFAULT_USERID_LEN 16
 
 #define MPI_NBYTES(m)   ((mpi_get_nbits(m) + 7) / 8)
 
@@ -60,6 +63,9 @@ static const struct ecc_domain_parms sm2_ecp = {
 	.h = 1
 };
 
+static int __sm2_set_pub_key(struct mpi_ec_ctx *ec,
+			     const void *key, unsigned int keylen);
+
 static int sm2_ec_ctx_init(struct mpi_ec_ctx *ec)
 {
 	const struct ecc_domain_parms *ecp = &sm2_ecp;
@@ -79,10 +85,17 @@ static int sm2_ec_ctx_init(struct mpi_ec_ctx *ec)
 		goto free;
 
 	rc = -ENOMEM;
+
+	ec->Q = mpi_point_new(0);
+	if (!ec->Q)
+		goto free;
+
 	/* mpi_ec_setup_elliptic_curve */
 	ec->G = mpi_point_new(0);
-	if (!ec->G)
+	if (!ec->G) {
+		mpi_point_release(ec->Q);
 		goto free;
+	}
 
 	mpi_set(ec->G->x, x);
 	mpi_set(ec->G->y, y);
@@ -91,6 +104,7 @@ static int sm2_ec_ctx_init(struct mpi_ec_ctx *ec)
 	rc = -EINVAL;
 	ec->n = mpi_scanval(ecp->n);
 	if (!ec->n) {
+		mpi_point_release(ec->Q);
 		mpi_point_release(ec->G);
 		goto free;
 	}
@@ -119,12 +133,6 @@ static void sm2_ec_ctx_deinit(struct mpi_ec_ctx *ec)
 	memset(ec, 0, sizeof(*ec));
 }
 
-static int sm2_ec_ctx_reset(struct mpi_ec_ctx *ec)
-{
-	sm2_ec_ctx_deinit(ec);
-	return sm2_ec_ctx_init(ec);
-}
-
 /* RESULT must have been initialized and is set on success to the
  * point given by VALUE.
  */
@@ -132,55 +140,48 @@ static int sm2_ecc_os2ec(MPI_POINT result, MPI value)
 {
 	int rc;
 	size_t n;
-	const unsigned char *buf;
-	unsigned char *buf_memory;
+	unsigned char *buf;
 	MPI x, y;
 
-	n = (mpi_get_nbits(value)+7)/8;
-	buf_memory = kmalloc(n, GFP_KERNEL);
-	rc = mpi_print(GCRYMPI_FMT_USG, buf_memory, n, &n, value);
-	if (rc) {
-		kfree(buf_memory);
-		return rc;
-	}
-	buf = buf_memory;
+	n = MPI_NBYTES(value);
+	buf = kmalloc(n, GFP_KERNEL);
+	if (!buf)
+		return -ENOMEM;
 
-	if (n < 1) {
-		kfree(buf_memory);
-		return -EINVAL;
-	}
-	if (*buf != 4) {
-		kfree(buf_memory);
-		return -EINVAL; /* No support for point compression.  */
-	}
-	if (((n-1)%2)) {
-		kfree(buf_memory);
-		return -EINVAL;
-	}
-	n = (n-1)/2;
+	rc = mpi_print(GCRYMPI_FMT_USG, buf, n, &n, value);
+	if (rc)
+		goto err_freebuf;
+
+	rc = -EINVAL;
+	if (n < 1 || ((n - 1) % 2))
+		goto err_freebuf;
+	/* No support for point compression */
+	if (*buf != 0x4)
+		goto err_freebuf;
+
+	rc = -ENOMEM;
+	n = (n - 1) / 2;
 	x = mpi_read_raw_data(buf + 1, n);
-	if (!x) {
-		kfree(buf_memory);
-		return -ENOMEM;
-	}
+	if (!x)
+		goto err_freebuf;
 	y = mpi_read_raw_data(buf + 1 + n, n);
-	kfree(buf_memory);
-	if (!y) {
-		mpi_free(x);
-		return -ENOMEM;
-	}
+	if (!y)
+		goto err_freex;
 
 	mpi_normalize(x);
 	mpi_normalize(y);
-
 	mpi_set(result->x, x);
 	mpi_set(result->y, y);
 	mpi_set_ui(result->z, 1);
 
-	mpi_free(x);
-	mpi_free(y);
+	rc = 0;
 
-	return 0;
+	mpi_free(y);
+err_freex:
+	mpi_free(x);
+err_freebuf:
+	kfree(buf);
+	return rc;
 }
 
 struct sm2_signature_ctx {
@@ -219,11 +220,12 @@ int sm2_get_signature_s(void *context, size_t hdrlen, unsigned char tag,
 }
 
 static int sm2_z_digest_update(struct shash_desc *desc,
-			MPI m, unsigned int pbytes)
+			       MPI m, unsigned int pbytes)
 {
 	static const unsigned char zero[32];
 	unsigned char *in;
 	unsigned int inlen;
+	int err;
 
 	in = mpi_get_buffer(m, &inlen, NULL);
 	if (!in)
@@ -231,21 +233,22 @@ static int sm2_z_digest_update(struct shash_desc *desc,
 
 	if (inlen < pbytes) {
 		/* padding with zero */
-		crypto_sm3_update(desc, zero, pbytes - inlen);
-		crypto_sm3_update(desc, in, inlen);
+		err = crypto_shash_update(desc, zero, pbytes - inlen) ?:
+		      crypto_shash_update(desc, in, inlen);
 	} else if (inlen > pbytes) {
 		/* skip the starting zero */
-		crypto_sm3_update(desc, in + inlen - pbytes, pbytes);
+		err = crypto_shash_update(desc, in + inlen - pbytes, pbytes);
 	} else {
-		crypto_sm3_update(desc, in, inlen);
+		err = crypto_shash_update(desc, in, inlen);
 	}
 
 	kfree(in);
-	return 0;
+	return err;
 }
 
 static int sm2_z_digest_update_point(struct shash_desc *desc,
-		MPI_POINT point, struct mpi_ec_ctx *ec, unsigned int pbytes)
+				     MPI_POINT point, struct mpi_ec_ctx *ec,
+				     unsigned int pbytes)
 {
 	MPI x, y;
 	int ret = -EINVAL;
@@ -253,50 +256,72 @@ static int sm2_z_digest_update_point(struct shash_desc *desc,
 	x = mpi_new(0);
 	y = mpi_new(0);
 
-	if (!mpi_ec_get_affine(x, y, point, ec) &&
-		!sm2_z_digest_update(desc, x, pbytes) &&
-		!sm2_z_digest_update(desc, y, pbytes))
-		ret = 0;
+	ret = mpi_ec_get_affine(x, y, point, ec) ? -EINVAL :
+	      sm2_z_digest_update(desc, x, pbytes) ?:
+	      sm2_z_digest_update(desc, y, pbytes);
 
 	mpi_free(x);
 	mpi_free(y);
 	return ret;
 }
 
-int sm2_compute_z_digest(struct crypto_akcipher *tfm,
-			const unsigned char *id, size_t id_len,
-			unsigned char dgst[SM3_DIGEST_SIZE])
+int sm2_compute_z_digest(struct shash_desc *desc,
+			 const void *key, unsigned int keylen, void *dgst)
 {
-	struct mpi_ec_ctx *ec = akcipher_tfm_ctx(tfm);
-	uint16_t bits_len;
-	unsigned char entl[2];
-	SHASH_DESC_ON_STACK(desc, NULL);
+	struct mpi_ec_ctx *ec;
+	unsigned int bits_len;
 	unsigned int pbytes;
+	u8 entl[2];
+	int err;
 
-	if (id_len > (USHRT_MAX / 8) || !ec->Q)
-		return -EINVAL;
+	ec = kmalloc(sizeof(*ec), GFP_KERNEL);
+	if (!ec)
+		return -ENOMEM;
 
-	bits_len = (uint16_t)(id_len * 8);
+	err = sm2_ec_ctx_init(ec);
+	if (err)
+		goto out_free_ec;
+
+	err = __sm2_set_pub_key(ec, key, keylen);
+	if (err)
+		goto out_deinit_ec;
+
+	bits_len = SM2_DEFAULT_USERID_LEN * 8;
 	entl[0] = bits_len >> 8;
 	entl[1] = bits_len & 0xff;
 
 	pbytes = MPI_NBYTES(ec->p);
 
 	/* ZA = H256(ENTLA | IDA | a | b | xG | yG | xA | yA) */
-	sm3_base_init(desc);
-	crypto_sm3_update(desc, entl, 2);
-	crypto_sm3_update(desc, id, id_len);
+	err = crypto_shash_init(desc);
+	if (err)
+		goto out_deinit_ec;
 
-	if (sm2_z_digest_update(desc, ec->a, pbytes) ||
-		sm2_z_digest_update(desc, ec->b, pbytes) ||
-		sm2_z_digest_update_point(desc, ec->G, ec, pbytes) ||
-		sm2_z_digest_update_point(desc, ec->Q, ec, pbytes))
-		return -EINVAL;
+	err = crypto_shash_update(desc, entl, 2);
+	if (err)
+		goto out_deinit_ec;
 
-	crypto_sm3_final(desc, dgst);
-	return 0;
+	err = crypto_shash_update(desc, SM2_DEFAULT_USERID,
+				  SM2_DEFAULT_USERID_LEN);
+	if (err)
+		goto out_deinit_ec;
+
+	err = sm2_z_digest_update(desc, ec->a, pbytes) ?:
+	      sm2_z_digest_update(desc, ec->b, pbytes) ?:
+	      sm2_z_digest_update_point(desc, ec->G, ec, pbytes) ?:
+	      sm2_z_digest_update_point(desc, ec->Q, ec, pbytes);
+	if (err)
+		goto out_deinit_ec;
+
+	err = crypto_shash_final(desc, dgst);
+
+out_deinit_ec:
+	sm2_ec_ctx_deinit(ec);
+out_free_ec:
+	kfree(ec);
+	return err;
 }
-EXPORT_SYMBOL(sm2_compute_z_digest);
+EXPORT_SYMBOL_GPL(sm2_compute_z_digest);
 
 static int _sm2_verify(struct mpi_ec_ctx *ec, MPI hash, MPI sig_r, MPI sig_s)
 {
@@ -396,34 +421,26 @@ static int sm2_set_pub_key(struct crypto_akcipher *tfm,
 			const void *key, unsigned int keylen)
 {
 	struct mpi_ec_ctx *ec = akcipher_tfm_ctx(tfm);
+
+	return __sm2_set_pub_key(ec, key, keylen);
+
+}
+
+static int __sm2_set_pub_key(struct mpi_ec_ctx *ec,
+			     const void *key, unsigned int keylen)
+{
 	MPI a;
 	int rc;
 
-	rc = sm2_ec_ctx_reset(ec);
-	if (rc)
-		return rc;
-
-	ec->Q = mpi_point_new(0);
-	if (!ec->Q)
-		return -ENOMEM;
-
 	/* include the uncompressed flag '0x04' */
-	rc = -ENOMEM;
 	a = mpi_read_raw_data(key, keylen);
 	if (!a)
-		goto error;
+		return -ENOMEM;
 
 	mpi_normalize(a);
 	rc = sm2_ecc_os2ec(ec->Q, a);
 	mpi_free(a);
-	if (rc)
-		goto error;
 
-	return 0;
-
-error:
-	mpi_point_release(ec->Q);
-	ec->Q = NULL;
 	return rc;
 }
 
@@ -462,12 +479,12 @@ static struct akcipher_alg sm2 = {
 	},
 };
 
-static int sm2_init(void)
+static int __init sm2_init(void)
 {
 	return crypto_register_akcipher(&sm2);
 }
 
-static void sm2_exit(void)
+static void __exit sm2_exit(void)
 {
 	crypto_unregister_akcipher(&sm2);
 }

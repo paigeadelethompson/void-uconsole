@@ -10,7 +10,6 @@
 #include <linux/of.h>
 #include <linux/err.h>
 #include <soc/imx/revision.h>
-#include <soc/imx/timer.h>
 #include <asm/irq.h>
 
 #include "clk.h"
@@ -81,14 +80,6 @@ enum mx35_clks {
 };
 
 static struct clk *clk[clk_max];
-
-static struct clk ** const uart_clks[] __initconst = {
-	&clk[ipg],
-	&clk[uart1_gate],
-	&clk[uart2_gate],
-	&clk[uart3_gate],
-	NULL
-};
 
 static void __init _mx35_clocks_init(void)
 {
@@ -243,7 +234,7 @@ static void __init _mx35_clocks_init(void)
 	 */
 	clk_prepare_enable(clk[scc_gate]);
 
-	imx_register_uart_clocks(uart_clks);
+	imx_register_uart_clocks();
 
 	imx_print_silicon_rev("i.MX35", mx35_revision());
 }

@@ -22,7 +22,6 @@
 #include <linux/gpio/consumer.h>
 #include <linux/io.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 
 #include <asm/irq.h>
 
@@ -33,8 +32,6 @@ struct i2c_pca_pf_data {
 	wait_queue_head_t		wait;
 	struct i2c_adapter		adap;
 	struct i2c_algo_pca_data	algo_data;
-	unsigned long			io_base;
-	unsigned long			io_size;
 };
 
 /* Read/Write functions for different register alignments */
@@ -156,8 +153,6 @@ static int i2c_pca_pf_probe(struct platform_device *pdev)
 
 	init_waitqueue_head(&i2c->wait);
 
-	i2c->io_base = res->start;
-	i2c->io_size = resource_size(res);
 	i2c->irq = irq;
 
 	i2c->adap.nr = pdev->id;
@@ -225,13 +220,11 @@ static int i2c_pca_pf_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int i2c_pca_pf_remove(struct platform_device *pdev)
+static void i2c_pca_pf_remove(struct platform_device *pdev)
 {
 	struct i2c_pca_pf_data *i2c = platform_get_drvdata(pdev);
 
 	i2c_del_adapter(&i2c->adap);
-
-	return 0;
 }
 
 #ifdef CONFIG_OF
@@ -245,7 +238,7 @@ MODULE_DEVICE_TABLE(of, i2c_pca_of_match_table);
 
 static struct platform_driver i2c_pca_pf_driver = {
 	.probe = i2c_pca_pf_probe,
-	.remove = i2c_pca_pf_remove,
+	.remove_new = i2c_pca_pf_remove,
 	.driver = {
 		.name = "i2c-pca-platform",
 		.of_match_table = of_match_ptr(i2c_pca_of_match_table),

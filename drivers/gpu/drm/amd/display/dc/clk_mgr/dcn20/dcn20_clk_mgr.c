@@ -38,6 +38,7 @@
 #include "clk/clk_11_0_0_offset.h"
 #include "clk/clk_11_0_0_sh_mask.h"
 
+
 #undef FN
 #define FN(reg_name, field_name) \
 	clk_mgr->clk_mgr_shift->field_name, clk_mgr->clk_mgr_mask->field_name
@@ -123,19 +124,89 @@ void dcn20_update_clocks_update_dpp_dto(struct clk_mgr_internal *clk_mgr,
 	}
 }
 
-void dcn20_update_clocks_update_dentist(struct clk_mgr_internal *clk_mgr)
+void dcn20_update_clocks_update_dentist(struct clk_mgr_internal *clk_mgr, struct dc_state *context)
 {
-	int dpp_divider = DENTIST_DIVIDER_RANGE_SCALE_FACTOR
-			* clk_mgr->base.dentist_vco_freq_khz / clk_mgr->base.clks.dppclk_khz;
-	int disp_divider = DENTIST_DIVIDER_RANGE_SCALE_FACTOR
-			* clk_mgr->base.dentist_vco_freq_khz / clk_mgr->base.clks.dispclk_khz;
+	int dpp_divider = 0;
+	int disp_divider = 0;
+	uint32_t dppclk_wdivider = 0;
+	uint32_t dispclk_wdivider = 0;
+	uint32_t current_dispclk_wdivider;
+	uint32_t i;
 
-	uint32_t dppclk_wdivider = dentist_get_did_from_divider(dpp_divider);
-	uint32_t dispclk_wdivider = dentist_get_did_from_divider(disp_divider);
+	if (clk_mgr->base.clks.dppclk_khz == 0 || clk_mgr->base.clks.dispclk_khz == 0)
+		return;
+
+	dpp_divider = DENTIST_DIVIDER_RANGE_SCALE_FACTOR
+		* clk_mgr->base.dentist_vco_freq_khz / clk_mgr->base.clks.dppclk_khz;
+	disp_divider = DENTIST_DIVIDER_RANGE_SCALE_FACTOR
+		* clk_mgr->base.dentist_vco_freq_khz / clk_mgr->base.clks.dispclk_khz;
+
+	dppclk_wdivider = dentist_get_did_from_divider(dpp_divider);
+	dispclk_wdivider = dentist_get_did_from_divider(disp_divider);
+
+	REG_GET(DENTIST_DISPCLK_CNTL,
+			DENTIST_DISPCLK_WDIVIDER, &current_dispclk_wdivider);
+
+	/* When changing divider to or from 127, some extra programming is required to prevent corruption */
+	if (current_dispclk_wdivider == 127 && dispclk_wdivider != 127) {
+		for (i = 0; i < clk_mgr->base.ctx->dc->res_pool->pipe_count; i++) {
+			struct pipe_ctx *pipe_ctx = &context->res_ctx.pipe_ctx[i];
+			uint32_t fifo_level;
+			struct dccg *dccg = clk_mgr->base.ctx->dc->res_pool->dccg;
+			struct stream_encoder *stream_enc = pipe_ctx->stream_res.stream_enc;
+			int32_t N;
+			int32_t j;
+
+			if (!resource_is_pipe_type(pipe_ctx, OTG_MASTER))
+				continue;
+			/* Virtual encoders don't have this function */
+			if (!stream_enc->funcs->get_fifo_cal_average_level)
+				continue;
+			fifo_level = stream_enc->funcs->get_fifo_cal_average_level(
+					stream_enc);
+			N = fifo_level / 4;
+			dccg->funcs->set_fifo_errdet_ovr_en(
+					dccg,
+					true);
+			for (j = 0; j < N - 4; j++)
+				dccg->funcs->otg_drop_pixel(
+						dccg,
+						pipe_ctx->stream_res.tg->inst);
+			dccg->funcs->set_fifo_errdet_ovr_en(
+					dccg,
+					false);
+		}
+	} else if (dispclk_wdivider == 127 && current_dispclk_wdivider != 127) {
+		REG_UPDATE(DENTIST_DISPCLK_CNTL,
+				DENTIST_DISPCLK_WDIVIDER, 126);
+		REG_WAIT(DENTIST_DISPCLK_CNTL, DENTIST_DISPCLK_CHG_DONE, 1, 50, 2000);
+		for (i = 0; i < clk_mgr->base.ctx->dc->res_pool->pipe_count; i++) {
+			struct pipe_ctx *pipe_ctx = &context->res_ctx.pipe_ctx[i];
+			struct dccg *dccg = clk_mgr->base.ctx->dc->res_pool->dccg;
+			struct stream_encoder *stream_enc = pipe_ctx->stream_res.stream_enc;
+			uint32_t fifo_level;
+			int32_t N;
+			int32_t j;
+
+			if (!resource_is_pipe_type(pipe_ctx, OTG_MASTER))
+				continue;
+			/* Virtual encoders don't have this function */
+			if (!stream_enc->funcs->get_fifo_cal_average_level)
+				continue;
+			fifo_level = stream_enc->funcs->get_fifo_cal_average_level(
+					stream_enc);
+			N = fifo_level / 4;
+			dccg->funcs->set_fifo_errdet_ovr_en(dccg, true);
+			for (j = 0; j < 12 - N; j++)
+				dccg->funcs->otg_add_pixel(dccg,
+						pipe_ctx->stream_res.tg->inst);
+			dccg->funcs->set_fifo_errdet_ovr_en(dccg, false);
+		}
+	}
 
 	REG_UPDATE(DENTIST_DISPCLK_CNTL,
 			DENTIST_DISPCLK_WDIVIDER, dispclk_wdivider);
-//	REG_WAIT(DENTIST_DISPCLK_CNTL, DENTIST_DISPCLK_CHG_DONE, 1, 5, 100);
+	REG_WAIT(DENTIST_DISPCLK_CNTL, DENTIST_DISPCLK_CHG_DONE, 1, 50, 2000);
 	REG_UPDATE(DENTIST_DISPCLK_CNTL,
 			DENTIST_DPPCLK_WDIVIDER, dppclk_wdivider);
 	REG_WAIT(DENTIST_DISPCLK_CNTL, DENTIST_DPPCLK_CHG_DONE, 1, 5, 100);
@@ -191,20 +262,20 @@ void dcn2_update_clocks(struct clk_mgr *clk_mgr_base,
 	if (should_set_clock(safe_to_lower, new_clocks->dcfclk_khz, clk_mgr_base->clks.dcfclk_khz)) {
 		clk_mgr_base->clks.dcfclk_khz = new_clocks->dcfclk_khz;
 		if (pp_smu && pp_smu->set_hard_min_dcfclk_by_freq)
-			pp_smu->set_hard_min_dcfclk_by_freq(&pp_smu->pp_smu, clk_mgr_base->clks.dcfclk_khz / 1000);
+			pp_smu->set_hard_min_dcfclk_by_freq(&pp_smu->pp_smu, khz_to_mhz_ceil(clk_mgr_base->clks.dcfclk_khz));
 	}
 
 	if (should_set_clock(safe_to_lower,
 			new_clocks->dcfclk_deep_sleep_khz, clk_mgr_base->clks.dcfclk_deep_sleep_khz)) {
 		clk_mgr_base->clks.dcfclk_deep_sleep_khz = new_clocks->dcfclk_deep_sleep_khz;
 		if (pp_smu && pp_smu->set_min_deep_sleep_dcfclk)
-			pp_smu->set_min_deep_sleep_dcfclk(&pp_smu->pp_smu, clk_mgr_base->clks.dcfclk_deep_sleep_khz / 1000);
+			pp_smu->set_min_deep_sleep_dcfclk(&pp_smu->pp_smu, khz_to_mhz_ceil(clk_mgr_base->clks.dcfclk_deep_sleep_khz));
 	}
 
 	if (should_set_clock(safe_to_lower, new_clocks->socclk_khz, clk_mgr_base->clks.socclk_khz)) {
 		clk_mgr_base->clks.socclk_khz = new_clocks->socclk_khz;
 		if (pp_smu && pp_smu->set_hard_min_socclk_by_freq)
-			pp_smu->set_hard_min_socclk_by_freq(&pp_smu->pp_smu, clk_mgr_base->clks.socclk_khz / 1000);
+			pp_smu->set_hard_min_socclk_by_freq(&pp_smu->pp_smu, khz_to_mhz_ceil(clk_mgr_base->clks.socclk_khz));
 	}
 
 	total_plane_count = clk_mgr_helper_get_active_plane_cnt(dc, context);
@@ -219,7 +290,7 @@ void dcn2_update_clocks(struct clk_mgr *clk_mgr_base,
 	if (should_set_clock(safe_to_lower, new_clocks->dramclk_khz, clk_mgr_base->clks.dramclk_khz)) {
 		clk_mgr_base->clks.dramclk_khz = new_clocks->dramclk_khz;
 		if (pp_smu && pp_smu->set_hard_min_uclk_by_freq)
-			pp_smu->set_hard_min_uclk_by_freq(&pp_smu->pp_smu, clk_mgr_base->clks.dramclk_khz / 1000);
+			pp_smu->set_hard_min_uclk_by_freq(&pp_smu->pp_smu, khz_to_mhz_ceil(clk_mgr_base->clks.dramclk_khz));
 	}
 
 	if (should_set_clock(safe_to_lower, new_clocks->dppclk_khz, clk_mgr->base.clks.dppclk_khz)) {
@@ -244,21 +315,20 @@ void dcn2_update_clocks(struct clk_mgr *clk_mgr_base,
 
 		clk_mgr_base->clks.disp_dpp_voltage_level_khz = new_clocks->disp_dpp_voltage_level_khz;
 		if (pp_smu && pp_smu->set_voltage_by_freq)
-			pp_smu->set_voltage_by_freq(&pp_smu->pp_smu, PP_SMU_NV_DISPCLK, clk_mgr_base->clks.disp_dpp_voltage_level_khz / 1000);
+			pp_smu->set_voltage_by_freq(&pp_smu->pp_smu, PP_SMU_NV_DISPCLK, khz_to_mhz_ceil(clk_mgr_base->clks.disp_dpp_voltage_level_khz));
 	}
 
 	if (dc->config.forced_clocks == false || (force_reset && safe_to_lower)) {
 		if (dpp_clock_lowered) {
 			// if clock is being lowered, increase DTO before lowering refclk
 			dcn20_update_clocks_update_dpp_dto(clk_mgr, context, safe_to_lower);
-			dcn20_update_clocks_update_dentist(clk_mgr);
+			dcn20_update_clocks_update_dentist(clk_mgr, context);
 		} else {
 			// if clock is being raised, increase refclk before lowering DTO
 			if (update_dppclk || update_dispclk)
-				dcn20_update_clocks_update_dentist(clk_mgr);
+				dcn20_update_clocks_update_dentist(clk_mgr, context);
 			// always update dtos unless clock is lowered and not safe to lower
-			if (new_clocks->dppclk_khz >= dc->current_state->bw_ctx.bw.dcn.clk.dppclk_khz)
-				dcn20_update_clocks_update_dpp_dto(clk_mgr, context, safe_to_lower);
+			dcn20_update_clocks_update_dpp_dto(clk_mgr, context, safe_to_lower);
 		}
 	}
 
@@ -325,6 +395,8 @@ void dcn2_update_clocks_fpga(struct clk_mgr *clk_mgr,
 	// Both fclk and ref_dppclk run on the same scemi clock.
 	clk_mgr_int->dccg->ref_dppclk = clk_mgr->clks.fclk_khz;
 
+	/* TODO: set dtbclk in correct place */
+	clk_mgr->clks.dtbclk_en = false;
 	dm_set_dcn_clocks(clk_mgr->ctx, &clk_mgr->clks);
 }
 
@@ -336,7 +408,7 @@ void dcn2_init_clocks(struct clk_mgr *clk_mgr)
 	clk_mgr->clks.prev_p_state_change_support = true;
 }
 
-void dcn2_enable_pme_wa(struct clk_mgr *clk_mgr_base)
+static void dcn2_enable_pme_wa(struct clk_mgr *clk_mgr_base)
 {
 	struct clk_mgr_internal *clk_mgr = TO_CLK_MGR_INTERNAL(clk_mgr_base);
 	struct pp_smu_funcs_nv *pp_smu = NULL;
@@ -362,7 +434,7 @@ void dcn2_read_clocks_from_hw_dentist(struct clk_mgr *clk_mgr_base)
 	REG_GET(DENTIST_DISPCLK_CNTL, DENTIST_DPPCLK_WDIVIDER, &dppclk_wdivider);
 
 	disp_divider = dentist_get_divider_from_did(dispclk_wdivider);
-	dpp_divider = dentist_get_divider_from_did(dispclk_wdivider);
+	dpp_divider = dentist_get_divider_from_did(dppclk_wdivider);
 
 	if (disp_divider && dpp_divider) {
 		/* Calculate the current DFS clock, in kHz.*/
@@ -372,7 +444,6 @@ void dcn2_read_clocks_from_hw_dentist(struct clk_mgr *clk_mgr_base)
 		clk_mgr_base->clks.dppclk_khz = (DENTIST_DIVIDER_RANGE_SCALE_FACTOR
 				* clk_mgr->base.dentist_vco_freq_khz) / dpp_divider;
 	}
-
 }
 
 void dcn2_get_clock(struct clk_mgr *clk_mgr,
@@ -439,7 +510,7 @@ static void dcn2_notify_link_rate_change(struct clk_mgr *clk_mgr_base, struct dc
 
 	if (max_phyclk_req != clk_mgr_base->clks.phyclk_khz) {
 		clk_mgr_base->clks.phyclk_khz = max_phyclk_req;
-		pp_smu->set_voltage_by_freq(&pp_smu->pp_smu, PP_SMU_NV_PHYCLK, clk_mgr_base->clks.phyclk_khz / 1000);
+		pp_smu->set_voltage_by_freq(&pp_smu->pp_smu, PP_SMU_NV_PHYCLK, khz_to_mhz_ceil(clk_mgr_base->clks.phyclk_khz));
 	}
 }
 
@@ -460,6 +531,11 @@ void dcn20_clk_mgr_construct(
 		struct pp_smu_funcs *pp_smu,
 		struct dccg *dccg)
 {
+	int dprefclk_did;
+	int target_div;
+	uint32_t pll_req_reg;
+	struct fixed31_32 pll_req;
+
 	clk_mgr->base.ctx = ctx;
 	clk_mgr->pp_smu = pp_smu;
 	clk_mgr->base.funcs = &dcn2_funcs;
@@ -476,42 +552,34 @@ void dcn20_clk_mgr_construct(
 
 	clk_mgr->base.dprefclk_khz = 700000; // 700 MHz planned if VCO is 3.85 GHz, will be retrieved
 
-	if (IS_FPGA_MAXIMUS_DC(ctx->dce_environment)) {
-		dcn2_funcs.update_clocks = dcn2_update_clocks_fpga;
+	/* DFS Slice 2 should be used for DPREFCLK */
+	dprefclk_did = REG_READ(CLK3_CLK2_DFS_CNTL);
+	/* Convert DPREFCLK DFS Slice DID to actual divider */
+	target_div = dentist_get_divider_from_did(dprefclk_did);
+	/* get FbMult value */
+	pll_req_reg = REG_READ(CLK3_CLK_PLL_REQ);
+
+	/* set up a fixed-point number
+	 * this works because the int part is on the right edge of the register
+	 * and the frac part is on the left edge
+	 */
+
+	pll_req = dc_fixpt_from_int(pll_req_reg & clk_mgr->clk_mgr_mask->FbMult_int);
+	pll_req.value |= pll_req_reg & clk_mgr->clk_mgr_mask->FbMult_frac;
+
+	/* multiply by REFCLK period */
+	pll_req = dc_fixpt_mul_int(pll_req, 100000);
+
+	/* integer part is now VCO frequency in kHz */
+	clk_mgr->base.dentist_vco_freq_khz = dc_fixpt_floor(pll_req);
+
+	/* in case we don't get a value from the register, use default */
+	if (clk_mgr->base.dentist_vco_freq_khz == 0)
 		clk_mgr->base.dentist_vco_freq_khz = 3850000;
 
-	} else {
-		/* DFS Slice 2 should be used for DPREFCLK */
-		int dprefclk_did = REG_READ(CLK3_CLK2_DFS_CNTL);
-		/* Convert DPREFCLK DFS Slice DID to actual divider*/
-		int target_div = dentist_get_divider_from_did(dprefclk_did);
-
-		/* get FbMult value */
-		uint32_t pll_req_reg = REG_READ(CLK3_CLK_PLL_REQ);
-		struct fixed31_32 pll_req;
-
-		/* set up a fixed-point number
-		 * this works because the int part is on the right edge of the register
-		 * and the frac part is on the left edge
-		 */
-
-		pll_req = dc_fixpt_from_int(pll_req_reg & clk_mgr->clk_mgr_mask->FbMult_int);
-		pll_req.value |= pll_req_reg & clk_mgr->clk_mgr_mask->FbMult_frac;
-
-		/* multiply by REFCLK period */
-		pll_req = dc_fixpt_mul_int(pll_req, 100000);
-
-		/* integer part is now VCO frequency in kHz */
-		clk_mgr->base.dentist_vco_freq_khz = dc_fixpt_floor(pll_req);
-
-		/* in case we don't get a value from the register, use default */
-		if (clk_mgr->base.dentist_vco_freq_khz == 0)
-			clk_mgr->base.dentist_vco_freq_khz = 3850000;
-
-		/* Calculate the DPREFCLK in kHz.*/
-		clk_mgr->base.dprefclk_khz = (DENTIST_DIVIDER_RANGE_SCALE_FACTOR
-			* clk_mgr->base.dentist_vco_freq_khz) / target_div;
-	}
+	/* Calculate the DPREFCLK in kHz.*/
+	clk_mgr->base.dprefclk_khz = (DENTIST_DIVIDER_RANGE_SCALE_FACTOR
+		* clk_mgr->base.dentist_vco_freq_khz) / target_div;
 	//Integrated_info table does not exist on dGPU projects so should not be referenced
 	//anywhere in code for dGPUs.
 	//Also there is no plan for now that DFS BYPASS will be used on NV10/12/14.
@@ -519,4 +587,3 @@ void dcn20_clk_mgr_construct(
 
 	dce_clock_read_ss_info(clk_mgr);
 }
-

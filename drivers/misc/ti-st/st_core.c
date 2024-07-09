@@ -15,15 +15,14 @@
 #include <linux/skbuff.h>
 
 #include <linux/ti_wilink_st.h>
+#include <linux/netdevice.h>
 
-extern void st_kim_recv(void *, const unsigned char *, long);
-void st_int_recv(void *, const unsigned char *, long);
 /*
  * function pointer pointing to either,
  * st_kim_recv during registration to receive fw download responses
  * st_int_recv after registration to receive proto stack responses
  */
-static void (*st_recv) (void *, const unsigned char *, long);
+static void (*st_recv)(void *disc_data, const u8 *ptr, size_t count);
 
 /********************************************************************/
 static void add_channel_to_table(struct st_data_s *st_gdata,
@@ -52,13 +51,12 @@ static void remove_channel_from_table(struct st_data_s *st_gdata,
  */
 int st_get_uart_wr_room(struct st_data_s *st_gdata)
 {
-	struct tty_struct *tty;
 	if (unlikely(st_gdata == NULL || st_gdata->tty == NULL)) {
 		pr_err("tty unavailable to perform write");
 		return -1;
 	}
-	tty = st_gdata->tty;
-	return tty->ops->write_room(tty);
+
+	return tty_write_room(st_gdata->tty);
 }
 
 /*
@@ -226,10 +224,8 @@ static inline void st_wakeup_ack(struct st_data_s *st_gdata,
  *	HCI-Events, ACL, SCO, 4 types of HCI-LL PM packets
  *	CH-8 packets from FM, CH-9 packets from GPS cores.
  */
-void st_int_recv(void *disc_data,
-	const unsigned char *data, long count)
+static void st_int_recv(void *disc_data, const u8 *ptr, size_t count)
 {
-	char *ptr;
 	struct st_proto_s *proto;
 	unsigned short payload_len = 0;
 	int len = 0;
@@ -238,14 +234,12 @@ void st_int_recv(void *disc_data,
 	struct st_data_s *st_gdata = (struct st_data_s *)disc_data;
 	unsigned long flags;
 
-	ptr = (char *)data;
-	/* tty_receive sent null ? */
-	if (unlikely(ptr == NULL) || (st_gdata == NULL)) {
+	if (st_gdata == NULL) {
 		pr_err(" received null from TTY ");
 		return;
 	}
 
-	pr_debug("count %ld rx_state %ld"
+	pr_debug("count %zu rx_state %ld"
 		   "rx_count %ld", count, st_gdata->rx_state,
 		   st_gdata->rx_count);
 
@@ -339,7 +333,7 @@ void st_int_recv(void *disc_data,
 			ptr++;
 			count--;
 			continue;
-			/* Unknow packet? */
+			/* Unknown packet? */
 		default:
 			type = *ptr;
 
@@ -380,7 +374,7 @@ void st_int_recv(void *disc_data,
 			st_gdata->rx_state = ST_W4_HEADER;
 			st_gdata->rx_count = st_gdata->list[type]->hdr_len;
 			pr_debug("rx_count %ld\n", st_gdata->rx_count);
-		};
+		}
 		ptr++;
 		count--;
 	}
@@ -436,7 +430,7 @@ static void st_int_enqueue(struct st_data_s *st_gdata, struct sk_buff *skb)
 	case ST_LL_AWAKE_TO_ASLEEP:
 		pr_err("ST LL is illegal state(%ld),"
 			   "purging received skb.", st_ll_getstate(st_gdata));
-		kfree_skb(skb);
+		dev_kfree_skb_irq(skb);
 		break;
 	case ST_LL_ASLEEP:
 		skb_queue_tail(&st_gdata->tx_waitq, skb);
@@ -445,7 +439,7 @@ static void st_int_enqueue(struct st_data_s *st_gdata, struct sk_buff *skb)
 	default:
 		pr_err("ST LL is illegal state(%ld),"
 			   "purging received skb.", st_ll_getstate(st_gdata));
-		kfree_skb(skb);
+		dev_kfree_skb_irq(skb);
 		break;
 	}
 
@@ -499,7 +493,7 @@ void st_tx_wakeup(struct st_data_s *st_data)
 				spin_unlock_irqrestore(&st_data->lock, flags);
 				break;
 			}
-			kfree_skb(skb);
+			dev_kfree_skb_irq(skb);
 			spin_unlock_irqrestore(&st_data->lock, flags);
 		}
 		/* if wake-up is set in another context- restart sending */
@@ -797,8 +791,8 @@ static void st_tty_close(struct tty_struct *tty)
 	pr_debug("%s: done ", __func__);
 }
 
-static void st_tty_receive(struct tty_struct *tty, const unsigned char *data,
-			   char *tty_flags, int count)
+static void st_tty_receive(struct tty_struct *tty, const u8 *data,
+			   const u8 *tty_flags, size_t count)
 {
 #ifdef VERBOSE
 	print_hex_dump(KERN_DEBUG, ">in>", DUMP_PREFIX_NONE,
@@ -845,7 +839,7 @@ static void st_tty_flush_buffer(struct tty_struct *tty)
 }
 
 static struct tty_ldisc_ops st_ldisc_ops = {
-	.magic = TTY_LDISC_MAGIC,
+	.num = N_TI_WL,
 	.name = "n_st",
 	.open = st_tty_open,
 	.close = st_tty_close,
@@ -861,7 +855,7 @@ int st_core_init(struct st_data_s **core_data)
 	struct st_data_s *st_gdata;
 	long err;
 
-	err = tty_register_ldisc(N_TI_WL, &st_ldisc_ops);
+	err = tty_register_ldisc(&st_ldisc_ops);
 	if (err) {
 		pr_err("error registering %d line discipline %ld",
 			   N_TI_WL, err);
@@ -872,11 +866,8 @@ int st_core_init(struct st_data_s **core_data)
 	st_gdata = kzalloc(sizeof(struct st_data_s), GFP_KERNEL);
 	if (!st_gdata) {
 		pr_err("memory allocation failed");
-		err = tty_unregister_ldisc(N_TI_WL);
-		if (err)
-			pr_err("unable to un-register ldisc %ld", err);
 		err = -ENOMEM;
-		return err;
+		goto err_unreg_ldisc;
 	}
 
 	/* Initialize ST TxQ and Tx waitQ queue head. All BT/FM/GPS module skb's
@@ -891,17 +882,18 @@ int st_core_init(struct st_data_s **core_data)
 	err = st_ll_init(st_gdata);
 	if (err) {
 		pr_err("error during st_ll initialization(%ld)", err);
-		kfree(st_gdata);
-		err = tty_unregister_ldisc(N_TI_WL);
-		if (err)
-			pr_err("unable to un-register ldisc");
-		return err;
+		goto err_free_gdata;
 	}
 
 	INIT_WORK(&st_gdata->work_write_wakeup, work_fn_write_wakeup);
 
 	*core_data = st_gdata;
 	return 0;
+err_free_gdata:
+	kfree(st_gdata);
+err_unreg_ldisc:
+	tty_unregister_ldisc(&st_ldisc_ops);
+	return err;
 }
 
 void st_core_exit(struct st_data_s *st_gdata)
@@ -919,9 +911,7 @@ void st_core_exit(struct st_data_s *st_gdata)
 		kfree_skb(st_gdata->rx_skb);
 		kfree_skb(st_gdata->tx_skb);
 		/* TTY ldisc cleanup */
-		err = tty_unregister_ldisc(N_TI_WL);
-		if (err)
-			pr_err("unable to un-register ldisc %ld", err);
+		tty_unregister_ldisc(&st_ldisc_ops);
 		/* free the global data pointer */
 		kfree(st_gdata);
 	}

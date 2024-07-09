@@ -6,26 +6,26 @@
 #define _TRACE_XEN_H
 
 #include <linux/tracepoint.h>
-#include <asm/paravirt_types.h>
+#include <asm/xen/hypervisor.h>
 #include <asm/xen/trace_types.h>
 
 struct multicall_entry;
 
 /* Multicalls */
 DECLARE_EVENT_CLASS(xen_mc__batch,
-	    TP_PROTO(enum paravirt_lazy_mode mode),
+	    TP_PROTO(enum xen_lazy_mode mode),
 	    TP_ARGS(mode),
 	    TP_STRUCT__entry(
-		    __field(enum paravirt_lazy_mode, mode)
+		    __field(enum xen_lazy_mode, mode)
 		    ),
 	    TP_fast_assign(__entry->mode = mode),
 	    TP_printk("start batch LAZY_%s",
-		      (__entry->mode == PARAVIRT_LAZY_MMU) ? "MMU" :
-		      (__entry->mode == PARAVIRT_LAZY_CPU) ? "CPU" : "NONE")
+		      (__entry->mode == XEN_LAZY_MMU) ? "MMU" :
+		      (__entry->mode == XEN_LAZY_CPU) ? "CPU" : "NONE")
 	);
 #define DEFINE_XEN_MC_BATCH(name)			\
 	DEFINE_EVENT(xen_mc__batch, name,		\
-		TP_PROTO(enum paravirt_lazy_mode mode),	\
+		TP_PROTO(enum xen_lazy_mode mode),	\
 		     TP_ARGS(mode))
 
 DEFINE_XEN_MC_BATCH(xen_mc_batch);
@@ -346,7 +346,7 @@ TRACE_EVENT(xen_mmu_flush_tlb_one_user,
 	    TP_printk("addr %lx", __entry->addr)
 	);
 
-TRACE_EVENT(xen_mmu_flush_tlb_others,
+TRACE_EVENT(xen_mmu_flush_tlb_multi,
 	    TP_PROTO(const struct cpumask *cpus, struct mm_struct *mm,
 		     unsigned long addr, unsigned long end),
 	    TP_ARGS(cpus, mm, addr, end),

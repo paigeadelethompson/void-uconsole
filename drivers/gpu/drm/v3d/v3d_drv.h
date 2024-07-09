@@ -19,22 +19,100 @@ struct reset_control;
 
 #define GMP_GRANULARITY (128 * 1024)
 
-/* Enum for each of the V3D queues. */
-enum v3d_queue {
-	V3D_BIN,
-	V3D_RENDER,
-	V3D_TFU,
-	V3D_CSD,
-	V3D_CACHE_CLEAN,
-};
+#define V3D_MMU_PAGE_SHIFT 12
 
 #define V3D_MAX_QUEUES (V3D_CACHE_CLEAN + 1)
+
+static inline char *
+v3d_queue_to_string(enum v3d_queue queue)
+{
+	switch (queue) {
+	case V3D_BIN: return "v3d_bin";
+	case V3D_RENDER: return "v3d_render";
+	case V3D_TFU: return "v3d_tfu";
+	case V3D_CSD: return "v3d_csd";
+	case V3D_CACHE_CLEAN: return "v3d_cache_clean";
+	}
+	return "UNKNOWN";
+}
 
 struct v3d_queue_state {
 	struct drm_gpu_scheduler sched;
 
 	u64 fence_context;
 	u64 emit_seqno;
+};
+
+struct v3d_queue_pid_stats {
+	struct	list_head list;
+	u64	runtime;
+	/* Time in jiffes.to purge the stats of this process. Every time a
+	 * process sends a new job to the queue, this timeout is delayed by
+	 * V3D_QUEUE_STATS_TIMEOUT while the gpu_pid_stats_timeout of the
+	 * queue is not reached.
+	 */
+	unsigned long timeout_purge;
+	u32	jobs_sent;
+	pid_t	pid;
+};
+
+struct v3d_queue_stats {
+	struct mutex lock;
+	u64	last_exec_start;
+	u64	last_exec_end;
+	u64	runtime;
+	u32	jobs_sent;
+	/* Time in jiffes to stop collecting gpu stats by process. This is
+	 * increased by every access to*the debugfs interface gpu_pid_usage.
+	 * If the debugfs is not used stats are not collected.
+	 */
+	unsigned long gpu_pid_stats_timeout;
+	pid_t	last_pid;
+	struct list_head pid_stats_list;
+};
+
+/* pid_stats by process (v3d_queue_pid_stats) are recorded if there is an
+ * access to the gpu_pid_usageare debugfs interface for the last
+ * V3D_QUEUE_STATS_TIMEOUT (70s).
+ *
+ * The same timeout is used to purge the stats by process for those process
+ * that have not sent jobs this period.
+ */
+#define V3D_QUEUE_STATS_TIMEOUT (70 * HZ)
+
+
+/* Performance monitor object. The perform lifetime is controlled by userspace
+ * using perfmon related ioctls. A perfmon can be attached to a submit_cl
+ * request, and when this is the case, HW perf counters will be activated just
+ * before the submit_cl is submitted to the GPU and disabled when the job is
+ * done. This way, only events related to a specific job will be counted.
+ */
+struct v3d_perfmon {
+	/* Tracks the number of users of the perfmon, when this counter reaches
+	 * zero the perfmon is destroyed.
+	 */
+	refcount_t refcnt;
+
+	/* Protects perfmon stop, as it can be invoked from multiple places. */
+	struct mutex lock;
+
+	/* Number of counters activated in this perfmon instance
+	 * (should be less than DRM_V3D_MAX_PERF_COUNTERS).
+	 */
+	u8 ncounters;
+
+	/* Events counted by the HW perf counters. */
+	u8 counters[DRM_V3D_MAX_PERF_COUNTERS];
+
+	/* Storage for counter values. Counters are incremented by the
+	 * HW perf counter values every time the perfmon is attached
+	 * to a GPU job.  This way, perfmon users don't have to
+	 * retrieve the results after each job if they want to track
+	 * events covering several submissions.  Note that counter
+	 * values can't be reset, but you can fake a reset by
+	 * destroying the perfmon and creating a new one.
+	 */
+	u64 values[];
 };
 
 struct v3d_dev {
@@ -95,6 +173,9 @@ struct v3d_dev {
 	 */
 	spinlock_t job_lock;
 
+	/* Used to track the active perfmon if any. */
+	struct v3d_perfmon *active_perfmon;
+
 	/* Protects bo_stats */
 	struct mutex bo_lock;
 
@@ -119,6 +200,8 @@ struct v3d_dev {
 		u32 num_allocated;
 		u32 pages_allocated;
 	} bo_stats;
+
+	struct v3d_queue_stats gpu_queue_stats[V3D_MAX_QUEUES];
 };
 
 static inline struct v3d_dev *
@@ -138,6 +221,11 @@ v3d_has_csd(struct v3d_dev *v3d)
 /* The per-fd struct, which tracks the MMU mappings. */
 struct v3d_file_priv {
 	struct v3d_dev *v3d;
+
+	struct {
+		struct idr idr;
+		struct mutex lock;
+	} perfmon;
 
 	struct drm_sched_entity sched_entity[V3D_MAX_QUEUES];
 };
@@ -198,11 +286,6 @@ struct v3d_job {
 	struct drm_gem_object **bo;
 	u32 bo_count;
 
-	/* Array of struct dma_fence * to block on before submitting this job.
-	 */
-	struct xarray deps;
-	unsigned long last_dep;
-
 	/* v3d fence to be signaled by IRQ handler when the job is complete. */
 	struct dma_fence *irq_fence;
 
@@ -210,6 +293,16 @@ struct v3d_job {
 	 * the BO reservations can be released.
 	 */
 	struct dma_fence *done_fence;
+
+	/* Pointer to a performance monitor object if the user requested it,
+	 * NULL otherwise.
+	 */
+	struct v3d_perfmon *perfmon;
+
+	/* PID of the process that submitted the job that could be used to
+	 * for collecting stats by process of gpu usage.
+	 */
+	pid_t client_pid;
 
 	/* Callback for the freeing of the job on refcount going to 0. */
 	void (*free)(struct kref *ref);
@@ -258,6 +351,21 @@ struct v3d_csd_job {
 	struct drm_v3d_submit_csd args;
 };
 
+struct v3d_submit_outsync {
+	struct drm_syncobj *syncobj;
+};
+
+struct v3d_submit_ext {
+	u32 flags;
+	u32 wait_stage;
+
+	u32 in_sync_count;
+	u64 in_syncs;
+
+	u32 out_sync_count;
+	struct v3d_submit_outsync *out_syncs;
+};
+
 /**
  * __wait_for - magic wait macro
  *
@@ -298,7 +406,7 @@ struct v3d_csd_job {
 static inline unsigned long nsecs_to_jiffies_timeout(const u64 n)
 {
 	/* nsecs_to_jiffies64() does not guard against overflow */
-	if (NSEC_PER_SEC % HZ &&
+	if ((NSEC_PER_SEC % HZ) != 0 &&
 	    div_u64(n, NSEC_PER_SEC) >= MAX_JIFFY_OFFSET / HZ)
 		return MAX_JIFFY_OFFSET;
 
@@ -338,6 +446,7 @@ int v3d_submit_csd_ioctl(struct drm_device *dev, void *data,
 			 struct drm_file *file_priv);
 int v3d_wait_bo_ioctl(struct drm_device *dev, void *data,
 		      struct drm_file *file_priv);
+void v3d_job_cleanup(struct v3d_job *job);
 void v3d_job_put(struct v3d_job *job);
 void v3d_reset(struct v3d_dev *v3d);
 void v3d_invalidate_caches(struct v3d_dev *v3d);
@@ -359,3 +468,20 @@ void v3d_mmu_remove_ptes(struct v3d_bo *bo);
 /* v3d_sched.c */
 int v3d_sched_init(struct v3d_dev *v3d);
 void v3d_sched_fini(struct v3d_dev *v3d);
+void v3d_sched_stats_update(struct v3d_queue_stats *queue_stats);
+
+/* v3d_perfmon.c */
+void v3d_perfmon_get(struct v3d_perfmon *perfmon);
+void v3d_perfmon_put(struct v3d_perfmon *perfmon);
+void v3d_perfmon_start(struct v3d_dev *v3d, struct v3d_perfmon *perfmon);
+void v3d_perfmon_stop(struct v3d_dev *v3d, struct v3d_perfmon *perfmon,
+		      bool capture);
+struct v3d_perfmon *v3d_perfmon_find(struct v3d_file_priv *v3d_priv, int id);
+void v3d_perfmon_open_file(struct v3d_file_priv *v3d_priv);
+void v3d_perfmon_close_file(struct v3d_file_priv *v3d_priv);
+int v3d_perfmon_create_ioctl(struct drm_device *dev, void *data,
+			     struct drm_file *file_priv);
+int v3d_perfmon_destroy_ioctl(struct drm_device *dev, void *data,
+			      struct drm_file *file_priv);
+int v3d_perfmon_get_values_ioctl(struct drm_device *dev, void *data,
+				 struct drm_file *file_priv);

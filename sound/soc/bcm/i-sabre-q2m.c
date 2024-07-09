@@ -53,8 +53,9 @@ static int snd_rpi_i_sabre_q2m_hw_params(
 	struct snd_soc_dai         *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 	int bclk_ratio;
 
-	bclk_ratio = snd_pcm_format_physical_width(
-			params_format(params)) * params_channels(params);
+	/* Using powers of 2 allows for an integer clock divisor */
+	bclk_ratio = (snd_pcm_format_width(params_format(params)) <= 16 ? 16 : 32) *
+				 params_channels(params);
 	return snd_soc_dai_set_bclk_ratio(cpu_dai, bclk_ratio);
 }
 
@@ -133,7 +134,8 @@ static int snd_rpi_i_sabre_q2m_probe(struct platform_device *pdev)
 
 static int snd_rpi_i_sabre_q2m_remove(struct platform_device *pdev)
 {
-	return snd_soc_unregister_card(&snd_rpi_i_sabre_q2m);
+	snd_soc_unregister_card(&snd_rpi_i_sabre_q2m);
+	return 0;
 }
 
 static const struct of_device_id snd_rpi_i_sabre_q2m_of_match[] = {

@@ -22,7 +22,8 @@
 #include <linux/bitops.h>
 #include <linux/gpio/consumer.h>
 #include <linux/module.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
 #include <linux/regulator/consumer.h>
 #include <linux/spi/spi.h>
@@ -152,7 +153,7 @@
 #define ILI9322_GAMMA_7			0x16
 #define ILI9322_GAMMA_8			0x17
 
-/**
+/*
  * enum ili9322_input - the format of the incoming signal to the panel
  *
  * The panel can be connected to various input streams and four of them can
@@ -896,14 +897,12 @@ static int ili9322_probe(struct spi_device *spi)
 	return 0;
 }
 
-static int ili9322_remove(struct spi_device *spi)
+static void ili9322_remove(struct spi_device *spi)
 {
 	struct ili9322 *ili = spi_get_drvdata(spi);
 
 	ili9322_power_off(ili);
 	drm_panel_remove(&ili->panel);
-
-	return 0;
 }
 
 /*

@@ -48,15 +48,19 @@
  * To make this clear all the helper vtables are pulled together in this location here.
  */
 
-enum mode_set_atomic;
 struct drm_writeback_connector;
 struct drm_writeback_job;
+
+enum mode_set_atomic {
+	LEAVE_ATOMIC_MODE_SET,
+	ENTER_ATOMIC_MODE_SET,
+};
 
 /**
  * struct drm_crtc_helper_funcs - helper operations for CRTCs
  *
- * These hooks are used by the legacy CRTC helpers, the transitional plane
- * helpers and the new atomic modesetting helpers.
+ * These hooks are used by the legacy CRTC helpers and the new atomic
+ * modesetting helpers.
  */
 struct drm_crtc_helper_funcs {
 	/**
@@ -212,9 +216,7 @@ struct drm_crtc_helper_funcs {
 	 *
 	 * This callback is used to update the display mode of a CRTC without
 	 * changing anything of the primary plane configuration. This fits the
-	 * requirement of atomic and hence is used by the atomic helpers. It is
-	 * also used by the transitional plane helpers to implement a
-	 * @mode_set hook in drm_helper_crtc_mode_set().
+	 * requirement of atomic and hence is used by the atomic helpers.
 	 *
 	 * Note that the display pipe is completely off when this function is
 	 * called. Atomic drivers which need hardware to be running before they
@@ -329,8 +331,8 @@ struct drm_crtc_helper_funcs {
 	 * all updated. Again the recommendation is to just call check helpers
 	 * until a maximal configuration is reached.
 	 *
-	 * This callback is used by the atomic modeset helpers and by the
-	 * transitional plane helpers, but it is optional.
+	 * This callback is used by the atomic modeset helpers, but it is
+	 * optional.
 	 *
 	 * NOTE:
 	 *
@@ -369,8 +371,8 @@ struct drm_crtc_helper_funcs {
 	 * has picked. See drm_atomic_helper_commit_planes() for a discussion of
 	 * the tradeoffs and variants of plane commit helpers.
 	 *
-	 * This callback is used by the atomic modeset helpers and by the
-	 * transitional plane helpers, but it is optional.
+	 * This callback is used by the atomic modeset helpers, but it is
+	 * optional.
 	 */
 	void (*atomic_begin)(struct drm_crtc *crtc,
 			     struct drm_atomic_state *state);
@@ -393,8 +395,8 @@ struct drm_crtc_helper_funcs {
 	 * has picked. See drm_atomic_helper_commit_planes() for a discussion of
 	 * the tradeoffs and variants of plane commit helpers.
 	 *
-	 * This callback is used by the atomic modeset helpers and by the
-	 * transitional plane helpers, but it is optional.
+	 * This callback is used by the atomic modeset helpers, but it is
+	 * optional.
 	 */
 	void (*atomic_flush)(struct drm_crtc *crtc,
 			     struct drm_atomic_state *state);
@@ -503,8 +505,8 @@ static inline void drm_crtc_helper_add(struct drm_crtc *crtc,
 /**
  * struct drm_encoder_helper_funcs - helper operations for encoders
  *
- * These hooks are used by the legacy CRTC helpers, the transitional plane
- * helpers and the new atomic modesetting helpers.
+ * These hooks are used by the legacy CRTC helpers and the new atomic
+ * modesetting helpers.
  */
 struct drm_encoder_helper_funcs {
 	/**
@@ -866,12 +868,18 @@ struct drm_connector_helper_funcs {
 	 * The usual way to implement this is to cache the EDID retrieved in the
 	 * probe callback somewhere in the driver-private connector structure.
 	 * In this function drivers then parse the modes in the EDID and add
-	 * them by calling drm_add_edid_modes(). But connectors that driver a
+	 * them by calling drm_add_edid_modes(). But connectors that drive a
 	 * fixed panel can also manually add specific modes using
 	 * drm_mode_probed_add(). Drivers which manually add modes should also
 	 * make sure that the &drm_connector.display_info,
 	 * &drm_connector.width_mm and &drm_connector.height_mm fields are
 	 * filled in.
+	 *
+	 * Note that the caller function will automatically add standard VESA
+	 * DMT modes up to 1024x768 if the .get_modes() helper operation returns
+	 * no mode and if the connector status is connector_status_connected or
+	 * connector_status_unknown. There is no need to call
+	 * drm_add_modes_noedid() manually in that case.
 	 *
 	 * Virtual drivers that just want some standard VESA mode with a given
 	 * resolution can call drm_add_modes_noedid(), and mark the preferred
@@ -890,7 +898,8 @@ struct drm_connector_helper_funcs {
 	 *
 	 * RETURNS:
 	 *
-	 * The number of modes added by calling drm_mode_probed_add().
+	 * The number of modes added by calling drm_mode_probed_add(). Return 0
+	 * on failures (no modes) instead of negative error codes.
 	 */
 	int (*get_modes)(struct drm_connector *connector);
 
@@ -1044,9 +1053,8 @@ struct drm_connector_helper_funcs {
 	 * NOTE:
 	 *
 	 * This function is called in the check phase of an atomic update. The
-	 * driver is not allowed to change anything outside of the free-standing
-	 * state objects passed-in or assembled in the overall &drm_atomic_state
-	 * update tracking structure.
+	 * driver is not allowed to change anything outside of the
+	 * &drm_atomic_state update tracking structure passed in.
 	 *
 	 * RETURNS:
 	 *
@@ -1056,7 +1064,7 @@ struct drm_connector_helper_funcs {
 	 * for this.
 	 */
 	struct drm_encoder *(*atomic_best_encoder)(struct drm_connector *connector,
-						   struct drm_connector_state *connector_state);
+						   struct drm_atomic_state *state);
 
 	/**
 	 * @atomic_check:
@@ -1097,15 +1105,15 @@ struct drm_connector_helper_funcs {
 	 *
 	 * This hook is to be used by drivers implementing writeback connectors
 	 * that need a point when to commit the writeback job to the hardware.
-	 * The writeback_job to commit is available in
-	 * &drm_connector_state.writeback_job.
+	 * The writeback_job to commit is available in the new connector state,
+	 * in &drm_connector_state.writeback_job.
 	 *
 	 * This hook is optional.
 	 *
 	 * This callback is used by the atomic modeset helpers.
 	 */
 	void (*atomic_commit)(struct drm_connector *connector,
-			      struct drm_connector_state *state);
+			      struct drm_atomic_state *state);
 
 	/**
 	 * @prepare_writeback_job:
@@ -1138,6 +1146,28 @@ struct drm_connector_helper_funcs {
 	 */
 	void (*cleanup_writeback_job)(struct drm_writeback_connector *connector,
 				      struct drm_writeback_job *job);
+
+	/**
+	 * @enable_hpd:
+	 *
+	 * Enable hot-plug detection for the connector.
+	 *
+	 * This operation is optional.
+	 *
+	 * This callback is used by the drm_kms_helper_poll_enable() helpers.
+	 */
+	void (*enable_hpd)(struct drm_connector *connector);
+
+	/**
+	 * @disable_hpd:
+	 *
+	 * Disable hot-plug detection for the connector.
+	 *
+	 * This operation is optional.
+	 *
+	 * This callback is used by the drm_kms_helper_poll_disable() helpers.
+	 */
+	void (*disable_hpd)(struct drm_connector *connector);
 };
 
 /**
@@ -1154,8 +1184,7 @@ static inline void drm_connector_helper_add(struct drm_connector *connector,
 /**
  * struct drm_plane_helper_funcs - helper operations for planes
  *
- * These functions are used by the atomic helpers and by the transitional plane
- * helpers.
+ * These functions are used by the atomic helpers.
  */
 struct drm_plane_helper_funcs {
 	/**
@@ -1173,14 +1202,25 @@ struct drm_plane_helper_funcs {
 	 * equivalent functionality should be implemented through private
 	 * members in the plane structure.
 	 *
-	 * Drivers which always have their buffers pinned should use
-	 * drm_gem_fb_prepare_fb() for this hook.
+	 * For GEM drivers who neither have a @prepare_fb nor @cleanup_fb hook
+	 * set drm_gem_plane_helper_prepare_fb() is called automatically to
+	 * implement this. Other drivers which need additional plane processing
+	 * can call drm_gem_plane_helper_prepare_fb() from their @prepare_fb
+	 * hook.
+	 *
+	 * The resources acquired in @prepare_fb persist after the end of
+	 * the atomic commit. Resources that can be release at the commit's end
+	 * should be acquired in @begin_fb_access and released in @end_fb_access.
+	 * For example, a GEM buffer's pin operation belongs into @prepare_fb to
+	 * keep the buffer pinned after the commit. But a vmap operation for
+	 * shadow-plane helpers belongs into @begin_fb_access, so that atomic
+	 * helpers remove the mapping at the end of the commit.
 	 *
 	 * The helpers will call @cleanup_fb with matching arguments for every
 	 * successful call to this hook.
 	 *
-	 * This callback is used by the atomic modeset helpers and by the
-	 * transitional plane helpers, but it is optional.
+	 * This callback is used by the atomic modeset helpers, but it is
+	 * optional. See @begin_fb_access for preparing per-commit resources.
 	 *
 	 * RETURNS:
 	 *
@@ -1197,11 +1237,41 @@ struct drm_plane_helper_funcs {
 	 * This hook is called to clean up any resources allocated for the given
 	 * framebuffer and plane configuration in @prepare_fb.
 	 *
-	 * This callback is used by the atomic modeset helpers and by the
-	 * transitional plane helpers, but it is optional.
+	 * This callback is used by the atomic modeset helpers, but it is
+	 * optional.
 	 */
 	void (*cleanup_fb)(struct drm_plane *plane,
 			   struct drm_plane_state *old_state);
+
+	/**
+	 * @begin_fb_access:
+	 *
+	 * This hook prepares the plane for access during an atomic commit.
+	 * In contrast to @prepare_fb, resources acquired in @begin_fb_access,
+	 * are released at the end of the atomic commit in @end_fb_access.
+	 *
+	 * For example, with shadow-plane helpers, the GEM buffer's vmap
+	 * operation belongs into @begin_fb_access, so that the buffer's
+	 * memory will be unmapped at the end of the commit in @end_fb_access.
+	 * But a GEM buffer's pin operation belongs into @prepare_fb
+	 * to keep the buffer pinned after the commit.
+	 *
+	 * The callback is used by the atomic modeset helpers, but it is optional.
+	 * See @end_fb_cleanup for undoing the effects of @begin_fb_access and
+	 * @prepare_fb for acquiring resources until the next pageflip.
+	 *
+	 * Returns:
+	 * 0 on success, or a negative errno code otherwise.
+	 */
+	int (*begin_fb_access)(struct drm_plane *plane, struct drm_plane_state *new_plane_state);
+
+	/**
+	 * @end_fb_access:
+	 *
+	 * This hook cleans up resources allocated by @begin_fb_access. It it called
+	 * at the end of a commit for the new plane state.
+	 */
+	void (*end_fb_access)(struct drm_plane *plane, struct drm_plane_state *new_plane_state);
 
 	/**
 	 * @atomic_check:
@@ -1222,15 +1292,14 @@ struct drm_plane_helper_funcs {
 	 * all updated. Again the recommendation is to just call check helpers
 	 * until a maximal configuration is reached.
 	 *
-	 * This callback is used by the atomic modeset helpers and by the
-	 * transitional plane helpers, but it is optional.
+	 * This callback is used by the atomic modeset helpers, but it is
+	 * optional.
 	 *
 	 * NOTE:
 	 *
 	 * This function is called in the check phase of an atomic update. The
-	 * driver is not allowed to change anything outside of the free-standing
-	 * state objects passed-in or assembled in the overall &drm_atomic_state
-	 * update tracking structure.
+	 * driver is not allowed to change anything outside of the
+	 * &drm_atomic_state update tracking structure.
 	 *
 	 * RETURNS:
 	 *
@@ -1240,7 +1309,7 @@ struct drm_plane_helper_funcs {
 	 * deadlock.
 	 */
 	int (*atomic_check)(struct drm_plane *plane,
-			    struct drm_plane_state *state);
+			    struct drm_atomic_state *state);
 
 	/**
 	 * @atomic_update:
@@ -1254,11 +1323,36 @@ struct drm_plane_helper_funcs {
 	 * has picked. See drm_atomic_helper_commit_planes() for a discussion of
 	 * the tradeoffs and variants of plane commit helpers.
 	 *
-	 * This callback is used by the atomic modeset helpers and by the
-	 * transitional plane helpers, but it is optional.
+	 * This callback is used by the atomic modeset helpers, but it is optional.
 	 */
 	void (*atomic_update)(struct drm_plane *plane,
-			      struct drm_plane_state *old_state);
+			      struct drm_atomic_state *state);
+
+	/**
+	 * @atomic_enable:
+	 *
+	 * Drivers should use this function to unconditionally enable a plane.
+	 * This hook is called in-between the &drm_crtc_helper_funcs.atomic_begin
+	 * and drm_crtc_helper_funcs.atomic_flush callbacks. It is called after
+	 * @atomic_update, which will be called for all enabled planes. Drivers
+	 * that use @atomic_enable should set up a plane in @atomic_update and
+	 * afterwards enable the plane in @atomic_enable. If a plane needs to be
+	 * enabled before installing the scanout buffer, drivers can still do
+	 * so in @atomic_update.
+	 *
+	 * Note that the power state of the display pipe when this function is
+	 * called depends upon the exact helpers and calling sequence the driver
+	 * has picked. See drm_atomic_helper_commit_planes() for a discussion of
+	 * the tradeoffs and variants of plane commit helpers.
+	 *
+	 * This callback is used by the atomic modeset helpers, but it is
+	 * optional. If implemented, @atomic_enable should be the inverse of
+	 * @atomic_disable. Drivers that don't want to use either can still
+	 * implement the complete plane update in @atomic_update.
+	 */
+	void (*atomic_enable)(struct drm_plane *plane,
+			      struct drm_atomic_state *state);
+
 	/**
 	 * @atomic_disable:
 	 *
@@ -1278,18 +1372,18 @@ struct drm_plane_helper_funcs {
 	 * has picked. See drm_atomic_helper_commit_planes() for a discussion of
 	 * the tradeoffs and variants of plane commit helpers.
 	 *
-	 * This callback is used by the atomic modeset helpers and by the
-	 * transitional plane helpers, but it is optional.
+	 * This callback is used by the atomic modeset helpers, but it is
+	 * optional. It's intended to reverse the effects of @atomic_enable.
 	 */
 	void (*atomic_disable)(struct drm_plane *plane,
-			       struct drm_plane_state *old_state);
+			       struct drm_atomic_state *state);
 
 	/**
 	 * @atomic_async_check:
 	 *
-	 * Drivers should set this function pointer to check if the plane state
-	 * can be updated in a async fashion. Here async means "not vblank
-	 * synchronized".
+	 * Drivers should set this function pointer to check if the plane's
+	 * atomic state can be updated in a async fashion. Here async means
+	 * "not vblank synchronized".
 	 *
 	 * This hook is called by drm_atomic_async_check() to establish if a
 	 * given update can be committed asynchronously, that is, if it can
@@ -1301,7 +1395,7 @@ struct drm_plane_helper_funcs {
 	 * can not be applied in asynchronous manner.
 	 */
 	int (*atomic_async_check)(struct drm_plane *plane,
-				  struct drm_plane_state *state);
+				  struct drm_atomic_state *state);
 
 	/**
 	 * @atomic_async_update:
@@ -1317,11 +1411,9 @@ struct drm_plane_helper_funcs {
 	 * update won't happen if there is an outstanding commit modifying
 	 * the same plane.
 	 *
-	 * Note that unlike &drm_plane_helper_funcs.atomic_update this hook
-	 * takes the new &drm_plane_state as parameter. When doing async_update
-	 * drivers shouldn't replace the &drm_plane_state but update the
-	 * current one with the new plane configurations in the new
-	 * plane_state.
+	 * When doing async_update drivers shouldn't replace the
+	 * &drm_plane_state but update the current one with the new plane
+	 * configurations in the new plane_state.
 	 *
 	 * Drivers should also swap the framebuffers between current plane
 	 * state (&drm_plane.state) and new_state.
@@ -1340,7 +1432,7 @@ struct drm_plane_helper_funcs {
 	 *    for deferring if needed, until a common solution is created.
 	 */
 	void (*atomic_async_update)(struct drm_plane *plane,
-				    struct drm_plane_state *new_state);
+				    struct drm_atomic_state *state);
 };
 
 /**
@@ -1379,7 +1471,7 @@ struct drm_mode_config_helper_funcs {
 	 * starting to commit the update to the hardware.
 	 *
 	 * After the atomic update is committed to the hardware this hook needs
-	 * to call drm_atomic_helper_commit_hw_done(). Then wait for the upate
+	 * to call drm_atomic_helper_commit_hw_done(). Then wait for the update
 	 * to be executed by the hardware, for example using
 	 * drm_atomic_helper_wait_for_vblanks() or
 	 * drm_atomic_helper_wait_for_flip_done(), and then clean up the old
@@ -1396,6 +1488,27 @@ struct drm_mode_config_helper_funcs {
 	 * drm_atomic_helper_commit_tail().
 	 */
 	void (*atomic_commit_tail)(struct drm_atomic_state *state);
+
+	/**
+	 * @atomic_commit_setup:
+	 *
+	 * This hook is used by the default atomic_commit() hook implemented in
+	 * drm_atomic_helper_commit() together with the nonblocking helpers (see
+	 * drm_atomic_helper_setup_commit()) to extend the DRM commit setup. It
+	 * is not used by the atomic helpers.
+	 *
+	 * This function is called at the end of
+	 * drm_atomic_helper_setup_commit(), so once the commit has been
+	 * properly setup across the generic DRM object states. It allows
+	 * drivers to do some additional commit tracking that isn't related to a
+	 * CRTC, plane or connector, tracked in a &drm_private_obj structure.
+	 *
+	 * Note that the documentation of &drm_private_obj has more details on
+	 * how one should implement this.
+	 *
+	 * This hook is optional.
+	 */
+	int (*atomic_commit_setup)(struct drm_atomic_state *state);
 };
 
 #endif

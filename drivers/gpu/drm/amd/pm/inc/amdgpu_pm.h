@@ -24,9 +24,8 @@
 #ifndef __AMDGPU_PM_H__
 #define __AMDGPU_PM_H__
 
-struct cg_flag_name
-{
-	u32 flag;
+struct cg_flag_name {
+	u64 flag;
 	const char *name;
 };
 
@@ -84,6 +83,6 @@ int amdgpu_pm_virt_sysfs_init(struct amdgpu_device *adev);
 void amdgpu_pm_sysfs_fini(struct amdgpu_device *adev);
 void amdgpu_pm_virt_sysfs_fini(struct amdgpu_device *adev);
 
-int amdgpu_debugfs_pm_init(struct amdgpu_device *adev);
+void amdgpu_debugfs_pm_init(struct amdgpu_device *adev);
 
 #endif

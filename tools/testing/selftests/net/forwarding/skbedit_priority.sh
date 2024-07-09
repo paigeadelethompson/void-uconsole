@@ -54,7 +54,9 @@ h2_destroy()
 
 switch_create()
 {
-	ip link add name br1 up type bridge vlan_filtering 1
+	ip link add name br1 type bridge vlan_filtering 1
+	ip link set dev br1 addrgenmode none
+	ip link set dev br1 up
 	ip link set dev $swp1 master br1
 	ip link set dev $swp1 up
 	ip link set dev $swp2 master br1
@@ -72,7 +74,9 @@ switch_destroy()
 	tc qdisc del dev $swp2 clsact
 	tc qdisc del dev $swp1 clsact
 
+	ip link set dev $swp2 down
 	ip link set dev $swp2 nomaster
+	ip link set dev $swp1 down
 	ip link set dev $swp1 nomaster
 	ip link del dev br1
 }

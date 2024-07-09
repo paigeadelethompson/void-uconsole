@@ -26,7 +26,7 @@ It is documented in the HDMI 1.4 specification with the new 2.0 bits documented
 in the HDMI 2.0 specification. But for most of the features the freely available
 HDMI 1.3a specification is sufficient:
 
-http://www.microprocessor.org/HDMISpecification13a.pdf
+https://www.hdmi.org/spec/index
 
 
 CEC Adapter Interface
@@ -109,20 +109,23 @@ your driver:
 		int (*adap_monitor_all_enable)(struct cec_adapter *adap, bool enable);
 		int (*adap_monitor_pin_enable)(struct cec_adapter *adap, bool enable);
 		int (*adap_log_addr)(struct cec_adapter *adap, u8 logical_addr);
+		void (*adap_unconfigured)(struct cec_adapter *adap);
 		int (*adap_transmit)(struct cec_adapter *adap, u8 attempts,
 				      u32 signal_free_time, struct cec_msg *msg);
+		void (*adap_nb_transmit_canceled)(struct cec_adapter *adap,
+						  const struct cec_msg *msg);
 		void (*adap_status)(struct cec_adapter *adap, struct seq_file *file);
 		void (*adap_free)(struct cec_adapter *adap);
 
 		/* Error injection callbacks */
 		...
 
-		/* High-level callbacks */
+		/* High-level callback */
 		...
 	};
 
-The seven low-level ops deal with various aspects of controlling the CEC adapter
-hardware:
+These low-level ops deal with various aspects of controlling the CEC adapter
+hardware. They are all called with the mutex adap->lock held.
 
 
 To enable/disable the hardware::
@@ -130,9 +133,12 @@ To enable/disable the hardware::
 	int (*adap_enable)(struct cec_adapter *adap, bool enable);
 
 This callback enables or disables the CEC hardware. Enabling the CEC hardware
-means powering it up in a state where no logical addresses are claimed. This
-op assumes that the physical address (adap->phys_addr) is valid when enable is
-true and will not change while the CEC adapter remains enabled. The initial
+means powering it up in a state where no logical addresses are claimed. The
+physical address will always be valid if CEC_CAP_NEEDS_HPD is set. If that
+capability is not set, then the physical address can change while the CEC
+hardware is enabled. CEC drivers should not set CEC_CAP_NEEDS_HPD unless
+the hardware design requires that as this will make it impossible to wake
+up displays that pull the HPD low when in standby mode.  The initial
 state of the CEC adapter after calling cec_allocate_adapter() is disabled.
 
 Note that adap_enable must return 0 if enable is false.
@@ -143,7 +149,7 @@ To enable/disable the 'monitor all' mode::
 	int (*adap_monitor_all_enable)(struct cec_adapter *adap, bool enable);
 
 If enabled, then the adapter should be put in a mode to also monitor messages
-that not for us. Not all hardware supports this and this function is only
+that are not for us. Not all hardware supports this and this function is only
 called if the CEC_CAP_MONITOR_ALL capability is set. This callback is optional
 (some hardware may always be in 'monitor all' mode).
 
@@ -175,6 +181,14 @@ can receive directed messages to that address.
 Note that adap_log_addr must return 0 if logical_addr is CEC_LOG_ADDR_INVALID.
 
 
+Called when the adapter is unconfigured::
+
+	void (*adap_unconfigured)(struct cec_adapter *adap);
+
+The adapter is unconfigured. If the driver has to take specific actions after
+unconfiguration, then that can be done through this optional callback.
+
+
 To transmit a new message::
 
 	int (*adap_transmit)(struct cec_adapter *adap, u8 attempts,
@@ -191,6 +205,19 @@ automatically, but in some cases this information is needed.
 
 The CEC_FREE_TIME_TO_USEC macro can be used to convert signal_free_time to
 microseconds (one data bit period is 2.4 ms).
+
+
+To pass on the result of a canceled non-blocking transmit::
+
+	void (*adap_nb_transmit_canceled)(struct cec_adapter *adap,
+					  const struct cec_msg *msg);
+
+This optional callback can be used to obtain the result of a canceled
+non-blocking transmit with sequence number msg->sequence. This is
+called if the transmit was aborted, the transmit timed out (i.e. the
+hardware never signaled that the transmit finished), or the transmit
+was successful, but the wait for the expected reply was either aborted
+or it timed out.
 
 
 To log the current CEC hardware status::
@@ -335,7 +362,7 @@ So this must work:
 	$ cat einj.txt >error-inj
 
 The first callback is called when this file is read and it should show the
-the current error injection state::
+current error injection state::
 
 	int (*error_inj_show)(struct cec_adapter *adap, struct seq_file *sf);
 
@@ -358,7 +385,8 @@ Implementing the High-Level CEC Adapter
 ---------------------------------------
 
 The low-level operations drive the hardware, the high-level operations are
-CEC protocol driven. The following high-level callbacks are available:
+CEC protocol driven. The high-level callbacks are called without the adap->lock
+mutex being held. The following high-level callbacks are available:
 
 .. code-block:: none
 
@@ -370,8 +398,18 @@ CEC protocol driven. The following high-level callbacks are available:
 		...
 
 		/* High-level CEC message callback */
+		void (*configured)(struct cec_adapter *adap);
 		int (*received)(struct cec_adapter *adap, struct cec_msg *msg);
 	};
+
+Called when the adapter is configured::
+
+	void (*configured)(struct cec_adapter *adap);
+
+The adapter is fully configured, i.e. all logical addresses have been
+successfully claimed. If the driver has to take specific actions after
+configuration, then that can be done through this optional callback.
+
 
 The received() callback allows the driver to optionally handle a newly
 received CEC message::

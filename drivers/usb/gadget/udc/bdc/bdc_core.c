@@ -488,26 +488,13 @@ static int bdc_probe(struct platform_device *pdev)
 	int irq;
 	u32 temp;
 	struct device *dev = &pdev->dev;
-	struct clk *clk;
 	int phy_num;
 
 	dev_dbg(dev, "%s()\n", __func__);
 
-	clk = devm_clk_get_optional(dev, "sw_usbd");
-	if (IS_ERR(clk))
-		return PTR_ERR(clk);
-
-	ret = clk_prepare_enable(clk);
-	if (ret) {
-		dev_err(dev, "could not enable clock\n");
-		return ret;
-	}
-
 	bdc = devm_kzalloc(dev, sizeof(*bdc), GFP_KERNEL);
 	if (!bdc)
 		return -ENOMEM;
-
-	bdc->clk = clk;
 
 	bdc->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(bdc->regs))
@@ -545,10 +532,20 @@ static int bdc_probe(struct platform_device *pdev)
 		}
 	}
 
+	bdc->clk = devm_clk_get_optional(dev, "sw_usbd");
+	if (IS_ERR(bdc->clk))
+		return PTR_ERR(bdc->clk);
+
+	ret = clk_prepare_enable(bdc->clk);
+	if (ret) {
+		dev_err(dev, "could not enable clock\n");
+		return ret;
+	}
+
 	ret = bdc_phy_init(bdc);
 	if (ret) {
 		dev_err(bdc->dev, "BDC phy init failure:%d\n", ret);
-		return ret;
+		goto disable_clk;
 	}
 
 	temp = bdc_readl(bdc->regs, BDC_BDCCAP1);
@@ -560,7 +557,8 @@ static int bdc_probe(struct platform_device *pdev)
 		if (ret) {
 			dev_err(dev,
 				"No suitable DMA config available, abort\n");
-			return -ENOTSUPP;
+			ret = -ENOTSUPP;
+			goto phycleanup;
 		}
 		dev_dbg(dev, "Using 32-bit address\n");
 	}
@@ -580,10 +578,12 @@ cleanup:
 	bdc_hw_exit(bdc);
 phycleanup:
 	bdc_phy_exit(bdc);
+disable_clk:
+	clk_disable_unprepare(bdc->clk);
 	return ret;
 }
 
-static int bdc_remove(struct platform_device *pdev)
+static void bdc_remove(struct platform_device *pdev)
 {
 	struct bdc *bdc;
 
@@ -593,7 +593,6 @@ static int bdc_remove(struct platform_device *pdev)
 	bdc_hw_exit(bdc);
 	bdc_phy_exit(bdc);
 	clk_disable_unprepare(bdc->clk);
-	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -623,6 +622,7 @@ static int bdc_resume(struct device *dev)
 	ret = bdc_reinit(bdc);
 	if (ret) {
 		dev_err(bdc->dev, "err in bdc reinit\n");
+		clk_disable_unprepare(bdc->clk);
 		return ret;
 	}
 
@@ -647,7 +647,7 @@ static struct platform_driver bdc_driver = {
 		.of_match_table	= bdc_of_match,
 	},
 	.probe		= bdc_probe,
-	.remove		= bdc_remove,
+	.remove_new	= bdc_remove,
 };
 
 module_platform_driver(bdc_driver);

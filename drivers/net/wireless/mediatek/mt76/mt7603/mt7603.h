@@ -64,7 +64,6 @@ struct mt7603_sta {
 
 	struct mt7603_vif *vif;
 
-	struct list_head poll_list;
 	u32 tx_airtime_ac[4];
 
 	struct sk_buff_head psq;
@@ -110,9 +109,6 @@ struct mt7603_dev {
 
 	u32 rxfilter;
 
-	struct list_head sta_poll_list;
-	spinlock_t sta_poll_lock;
-
 	struct mt7603_sta global_sta;
 
 	u32 agc0, agc3;
@@ -120,7 +116,7 @@ struct mt7603_dev {
 	unsigned long last_cca_adj;
 
 	u32 ampdu_ref;
-	__le32 rx_ampdu_ts;
+	u32 rx_ampdu_ts;
 	u8 rssi_offset[3];
 
 	u8 slottime;
@@ -131,8 +127,6 @@ struct mt7603_dev {
 	ktime_t ed_time;
 
 	spinlock_t ps_lock;
-
-	u8 mac_work_count;
 
 	u8 mcu_running;
 
@@ -236,7 +230,7 @@ void mt7603_wtbl_set_ps(struct mt7603_dev *dev, struct mt7603_sta *sta,
 			bool enabled);
 void mt7603_wtbl_set_smps(struct mt7603_dev *dev, struct mt7603_sta *sta,
 			  bool enabled);
-void mt7603_filter_tx(struct mt7603_dev *dev, int idx, bool abort);
+void mt7603_filter_tx(struct mt7603_dev *dev, int mac_idx, int idx, bool abort);
 
 int mt7603_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
 			  enum mt76_txq_id qid, struct mt76_wcid *wcid,
@@ -246,7 +240,7 @@ int mt7603_tx_prepare_skb(struct mt76_dev *mdev, void *txwi_ptr,
 void mt7603_tx_complete_skb(struct mt76_dev *mdev, struct mt76_queue_entry *e);
 
 void mt7603_queue_rx_skb(struct mt76_dev *mdev, enum mt76_rxq_id q,
-			 struct sk_buff *skb);
+			 struct sk_buff *skb, u32 *info);
 void mt7603_rx_poll_complete(struct mt76_dev *mdev, enum mt76_rxq_id q);
 void mt7603_sta_ps(struct mt76_dev *mdev, struct ieee80211_sta *sta, bool ps);
 int mt7603_sta_add(struct mt76_dev *mdev, struct ieee80211_vif *vif,
@@ -256,9 +250,9 @@ void mt7603_sta_assoc(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 void mt7603_sta_remove(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 		       struct ieee80211_sta *sta);
 
-void mt7603_pre_tbtt_tasklet(unsigned long arg);
+void mt7603_pre_tbtt_tasklet(struct tasklet_struct *t);
 
-void mt7603_update_channel(struct mt76_dev *mdev);
+void mt7603_update_channel(struct mt76_phy *mphy);
 
 void mt7603_edcca_set_strict(struct mt7603_dev *dev, bool val);
 void mt7603_cca_stats_reset(struct mt7603_dev *dev);

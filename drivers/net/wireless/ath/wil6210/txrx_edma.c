@@ -548,7 +548,7 @@ static int wil_rx_crypto_check_edma(struct wil6210_priv *wil,
 	s = &wil->sta[cid];
 	c = mc ? &s->group_crypto_rx : &s->tid_crypto_rx[tid];
 	cc = &c->key_id[key_id];
-	pn = (u8 *)&st->ext.pn_15_0;
+	pn = (u8 *)&st->ext.pn;
 
 	if (!cc->key_set) {
 		wil_err_ratelimited(wil,
@@ -1026,6 +1026,8 @@ skipping:
 		stats->last_mcs_rx = wil_rx_status_get_mcs(msg);
 		if (stats->last_mcs_rx < ARRAY_SIZE(stats->rx_per_mcs))
 			stats->rx_per_mcs[stats->last_mcs_rx]++;
+		else if (stats->last_mcs_rx == WIL_EXTENDED_MCS_26)
+			stats->rx_per_mcs[WIL_BASE_MCS_FOR_EXTENDED_26]++;
 
 		stats->last_cb_mode_rx  = wil_rx_status_get_cb_mode(msg);
 	}

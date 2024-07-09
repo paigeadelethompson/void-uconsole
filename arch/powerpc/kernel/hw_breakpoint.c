@@ -15,6 +15,7 @@
 #include <linux/kernel.h>
 #include <linux/sched.h>
 #include <linux/smp.h>
+#include <linux/spinlock.h>
 #include <linux/debugfs.h>
 #include <linux/init.h>
 
@@ -22,7 +23,6 @@
 #include <asm/processor.h>
 #include <asm/sstep.h>
 #include <asm/debug.h>
-#include <asm/debugfs.h>
 #include <asm/hvcall.h>
 #include <asm/inst.h>
 #include <linux/uaccess.h>
@@ -43,16 +43,6 @@ int hw_breakpoint_slots(int type)
 	return 0;		/* no instruction breakpoints available */
 }
 
-static bool single_step_pending(void)
-{
-	int i;
-
-	for (i = 0; i < nr_wp_slots(); i++) {
-		if (current->thread.last_hit_ubp[i])
-			return true;
-	}
-	return false;
-}
 
 /*
  * Install a perf counter breakpoint.
@@ -84,7 +74,7 @@ int arch_install_hw_breakpoint(struct perf_event *bp)
 	 * Do not install DABR values if the instruction must be single-stepped.
 	 * If so, DABR will be populated in single_step_dabr_instruction().
 	 */
-	if (!single_step_pending())
+	if (!info->perf_single_step)
 		__set_breakpoint(i, info);
 
 	return 0;
@@ -122,249 +112,6 @@ void arch_uninstall_hw_breakpoint(struct perf_event *bp)
 static bool is_ptrace_bp(struct perf_event *bp)
 {
 	return bp->overflow_handler == ptrace_triggered;
-}
-
-struct breakpoint {
-	struct list_head list;
-	struct perf_event *bp;
-	bool ptrace_bp;
-};
-
-static DEFINE_PER_CPU(struct breakpoint *, cpu_bps[HBP_NUM_MAX]);
-static LIST_HEAD(task_bps);
-
-static struct breakpoint *alloc_breakpoint(struct perf_event *bp)
-{
-	struct breakpoint *tmp;
-
-	tmp = kzalloc(sizeof(*tmp), GFP_KERNEL);
-	if (!tmp)
-		return ERR_PTR(-ENOMEM);
-	tmp->bp = bp;
-	tmp->ptrace_bp = is_ptrace_bp(bp);
-	return tmp;
-}
-
-static bool bp_addr_range_overlap(struct perf_event *bp1, struct perf_event *bp2)
-{
-	__u64 bp1_saddr, bp1_eaddr, bp2_saddr, bp2_eaddr;
-
-	bp1_saddr = ALIGN_DOWN(bp1->attr.bp_addr, HW_BREAKPOINT_SIZE);
-	bp1_eaddr = ALIGN(bp1->attr.bp_addr + bp1->attr.bp_len, HW_BREAKPOINT_SIZE);
-	bp2_saddr = ALIGN_DOWN(bp2->attr.bp_addr, HW_BREAKPOINT_SIZE);
-	bp2_eaddr = ALIGN(bp2->attr.bp_addr + bp2->attr.bp_len, HW_BREAKPOINT_SIZE);
-
-	return (bp1_saddr < bp2_eaddr && bp1_eaddr > bp2_saddr);
-}
-
-static bool alternate_infra_bp(struct breakpoint *b, struct perf_event *bp)
-{
-	return is_ptrace_bp(bp) ? !b->ptrace_bp : b->ptrace_bp;
-}
-
-static bool can_co_exist(struct breakpoint *b, struct perf_event *bp)
-{
-	return !(alternate_infra_bp(b, bp) && bp_addr_range_overlap(b->bp, bp));
-}
-
-static int task_bps_add(struct perf_event *bp)
-{
-	struct breakpoint *tmp;
-
-	tmp = alloc_breakpoint(bp);
-	if (IS_ERR(tmp))
-		return PTR_ERR(tmp);
-
-	list_add(&tmp->list, &task_bps);
-	return 0;
-}
-
-static void task_bps_remove(struct perf_event *bp)
-{
-	struct list_head *pos, *q;
-
-	list_for_each_safe(pos, q, &task_bps) {
-		struct breakpoint *tmp = list_entry(pos, struct breakpoint, list);
-
-		if (tmp->bp == bp) {
-			list_del(&tmp->list);
-			kfree(tmp);
-			break;
-		}
-	}
-}
-
-/*
- * If any task has breakpoint from alternate infrastructure,
- * return true. Otherwise return false.
- */
-static bool all_task_bps_check(struct perf_event *bp)
-{
-	struct breakpoint *tmp;
-
-	list_for_each_entry(tmp, &task_bps, list) {
-		if (!can_co_exist(tmp, bp))
-			return true;
-	}
-	return false;
-}
-
-/*
- * If same task has breakpoint from alternate infrastructure,
- * return true. Otherwise return false.
- */
-static bool same_task_bps_check(struct perf_event *bp)
-{
-	struct breakpoint *tmp;
-
-	list_for_each_entry(tmp, &task_bps, list) {
-		if (tmp->bp->hw.target == bp->hw.target &&
-		    !can_co_exist(tmp, bp))
-			return true;
-	}
-	return false;
-}
-
-static int cpu_bps_add(struct perf_event *bp)
-{
-	struct breakpoint **cpu_bp;
-	struct breakpoint *tmp;
-	int i = 0;
-
-	tmp = alloc_breakpoint(bp);
-	if (IS_ERR(tmp))
-		return PTR_ERR(tmp);
-
-	cpu_bp = per_cpu_ptr(cpu_bps, bp->cpu);
-	for (i = 0; i < nr_wp_slots(); i++) {
-		if (!cpu_bp[i]) {
-			cpu_bp[i] = tmp;
-			break;
-		}
-	}
-	return 0;
-}
-
-static void cpu_bps_remove(struct perf_event *bp)
-{
-	struct breakpoint **cpu_bp;
-	int i = 0;
-
-	cpu_bp = per_cpu_ptr(cpu_bps, bp->cpu);
-	for (i = 0; i < nr_wp_slots(); i++) {
-		if (!cpu_bp[i])
-			continue;
-
-		if (cpu_bp[i]->bp == bp) {
-			kfree(cpu_bp[i]);
-			cpu_bp[i] = NULL;
-			break;
-		}
-	}
-}
-
-static bool cpu_bps_check(int cpu, struct perf_event *bp)
-{
-	struct breakpoint **cpu_bp;
-	int i;
-
-	cpu_bp = per_cpu_ptr(cpu_bps, cpu);
-	for (i = 0; i < nr_wp_slots(); i++) {
-		if (cpu_bp[i] && !can_co_exist(cpu_bp[i], bp))
-			return true;
-	}
-	return false;
-}
-
-static bool all_cpu_bps_check(struct perf_event *bp)
-{
-	int cpu;
-
-	for_each_online_cpu(cpu) {
-		if (cpu_bps_check(cpu, bp))
-			return true;
-	}
-	return false;
-}
-
-/*
- * We don't use any locks to serialize accesses to cpu_bps or task_bps
- * because are already inside nr_bp_mutex.
- */
-int arch_reserve_bp_slot(struct perf_event *bp)
-{
-	int ret;
-
-	/* ptrace breakpoint */
-	if (is_ptrace_bp(bp)) {
-		if (all_cpu_bps_check(bp))
-			return -ENOSPC;
-
-		if (same_task_bps_check(bp))
-			return -ENOSPC;
-
-		return task_bps_add(bp);
-	}
-
-	/* perf breakpoint */
-	if (is_kernel_addr(bp->attr.bp_addr))
-		return 0;
-
-	if (bp->hw.target && bp->cpu == -1) {
-		if (same_task_bps_check(bp))
-			return -ENOSPC;
-
-		return task_bps_add(bp);
-	} else if (!bp->hw.target && bp->cpu != -1) {
-		if (all_task_bps_check(bp))
-			return -ENOSPC;
-
-		return cpu_bps_add(bp);
-	}
-
-	if (same_task_bps_check(bp))
-		return -ENOSPC;
-
-	ret = cpu_bps_add(bp);
-	if (ret)
-		return ret;
-	ret = task_bps_add(bp);
-	if (ret)
-		cpu_bps_remove(bp);
-
-	return ret;
-}
-
-void arch_release_bp_slot(struct perf_event *bp)
-{
-	if (!is_kernel_addr(bp->attr.bp_addr)) {
-		if (bp->hw.target)
-			task_bps_remove(bp);
-		if (bp->cpu != -1)
-			cpu_bps_remove(bp);
-	}
-}
-
-/*
- * Perform cleanup of arch-specific counters during unregistration
- * of the perf-event
- */
-void arch_unregister_hw_breakpoint(struct perf_event *bp)
-{
-	/*
-	 * If the breakpoint is unregistered between a hw_breakpoint_handler()
-	 * and the single_step_dabr_instruction(), then cleanup the breakpoint
-	 * restoration variables to prevent dangling pointers.
-	 * FIXME, this should not be using bp->ctx at all! Sayeth peterz.
-	 */
-	if (bp->ctx && bp->ctx->task && bp->ctx->task != ((void *)-1L)) {
-		int i;
-
-		for (i = 0; i < nr_wp_slots(); i++) {
-			if (bp->ctx->task->thread.last_hit_ubp[i] == bp)
-				bp->ctx->task->thread.last_hit_ubp[i] = NULL;
-		}
-	}
 }
 
 /*
@@ -473,25 +220,36 @@ int hw_breakpoint_arch_parse(struct perf_event *bp,
  * Restores the breakpoint on the debug registers.
  * Invoke this function if it is known that the execution context is
  * about to change to cause loss of MSR_SE settings.
+ *
+ * The perf watchpoint will simply re-trigger once the thread is started again,
+ * and the watchpoint handler will set up MSR_SE and perf_single_step as
+ * needed.
  */
 void thread_change_pc(struct task_struct *tsk, struct pt_regs *regs)
 {
 	struct arch_hw_breakpoint *info;
 	int i;
 
+	preempt_disable();
+
 	for (i = 0; i < nr_wp_slots(); i++) {
-		if (unlikely(tsk->thread.last_hit_ubp[i]))
+		struct perf_event *bp = __this_cpu_read(bp_per_reg[i]);
+
+		if (unlikely(bp && counter_arch_bp(bp)->perf_single_step))
 			goto reset;
 	}
-	return;
+	goto out;
 
 reset:
-	regs->msr &= ~MSR_SE;
+	regs_set_return_msr(regs, regs->msr & ~MSR_SE);
 	for (i = 0; i < nr_wp_slots(); i++) {
 		info = counter_arch_bp(__this_cpu_read(bp_per_reg[i]));
 		__set_breakpoint(i, info);
-		tsk->thread.last_hit_ubp[i] = NULL;
+		info->perf_single_step = false;
 	}
+
+out:
+	preempt_enable();
 }
 
 static bool is_larx_stcx_instr(int type)
@@ -499,27 +257,31 @@ static bool is_larx_stcx_instr(int type)
 	return type == LARX || type == STCX;
 }
 
+static bool is_octword_vsx_instr(int type, int size)
+{
+	return ((type == LOAD_VSX || type == STORE_VSX) && size == 32);
+}
+
 /*
  * We've failed in reliably handling the hw-breakpoint. Unregister
  * it and throw a warning message to let the user know about it.
  */
-static void handler_error(struct perf_event *bp, struct arch_hw_breakpoint *info)
+static void handler_error(struct perf_event *bp)
 {
 	WARN(1, "Unable to handle hardware breakpoint. Breakpoint at 0x%lx will be disabled.",
-	     info->address);
+	     counter_arch_bp(bp)->address);
 	perf_event_disable_inatomic(bp);
 }
 
-static void larx_stcx_err(struct perf_event *bp, struct arch_hw_breakpoint *info)
+static void larx_stcx_err(struct perf_event *bp)
 {
 	printk_ratelimited("Breakpoint hit on instruction that can't be emulated. Breakpoint at 0x%lx will be disabled.\n",
-			   info->address);
+			   counter_arch_bp(bp)->address);
 	perf_event_disable_inatomic(bp);
 }
 
 static bool stepping_handler(struct pt_regs *regs, struct perf_event **bp,
-			     struct arch_hw_breakpoint **info, int *hit,
-			     struct ppc_inst instr)
+			     int *hit, ppc_inst_t instr)
 {
 	int i;
 	int stepped;
@@ -529,10 +291,11 @@ static bool stepping_handler(struct pt_regs *regs, struct perf_event **bp,
 		for (i = 0; i < nr_wp_slots(); i++) {
 			if (!hit[i])
 				continue;
-			current->thread.last_hit_ubp[i] = bp[i];
-			info[i] = NULL;
+
+			counter_arch_bp(bp[i])->perf_single_step = true;
+			bp[i] = NULL;
 		}
-		regs->msr |= MSR_SE;
+		regs_set_return_msr(regs, regs->msr | MSR_SE);
 		return false;
 	}
 
@@ -541,29 +304,89 @@ static bool stepping_handler(struct pt_regs *regs, struct perf_event **bp,
 		for (i = 0; i < nr_wp_slots(); i++) {
 			if (!hit[i])
 				continue;
-			handler_error(bp[i], info[i]);
-			info[i] = NULL;
+			handler_error(bp[i]);
+			bp[i] = NULL;
 		}
 		return false;
 	}
 	return true;
 }
 
+static void handle_p10dd1_spurious_exception(struct perf_event **bp,
+					     int *hit, unsigned long ea)
+{
+	int i;
+	unsigned long hw_end_addr;
+
+	/*
+	 * Handle spurious exception only when any bp_per_reg is set.
+	 * Otherwise this might be created by xmon and not actually a
+	 * spurious exception.
+	 */
+	for (i = 0; i < nr_wp_slots(); i++) {
+		struct arch_hw_breakpoint *info;
+
+		if (!bp[i])
+			continue;
+
+		info = counter_arch_bp(bp[i]);
+
+		hw_end_addr = ALIGN(info->address + info->len, HW_BREAKPOINT_SIZE);
+
+		/*
+		 * Ending address of DAWR range is less than starting
+		 * address of op.
+		 */
+		if ((hw_end_addr - 1) >= ea)
+			continue;
+
+		/*
+		 * Those addresses need to be in the same or in two
+		 * consecutive 512B blocks;
+		 */
+		if (((hw_end_addr - 1) >> 10) != (ea >> 10))
+			continue;
+
+		/*
+		 * 'op address + 64B' generates an address that has a
+		 * carry into bit 52 (crosses 2K boundary).
+		 */
+		if ((ea & 0x800) == ((ea + 64) & 0x800))
+			continue;
+
+		break;
+	}
+
+	if (i == nr_wp_slots())
+		return;
+
+	for (i = 0; i < nr_wp_slots(); i++) {
+		if (bp[i]) {
+			hit[i] = 1;
+			counter_arch_bp(bp[i])->type |= HW_BRK_TYPE_EXTRANEOUS_IRQ;
+		}
+	}
+}
+
+/*
+ * Handle a DABR or DAWR exception.
+ *
+ * Called in atomic context.
+ */
 int hw_breakpoint_handler(struct die_args *args)
 {
 	bool err = false;
 	int rc = NOTIFY_STOP;
 	struct perf_event *bp[HBP_NUM_MAX] = { NULL };
 	struct pt_regs *regs = args->regs;
-	struct arch_hw_breakpoint *info[HBP_NUM_MAX] = { NULL };
 	int i;
 	int hit[HBP_NUM_MAX] = {0};
 	int nr_hit = 0;
 	bool ptrace_bp = false;
-	struct ppc_inst instr = ppc_inst(0);
+	ppc_inst_t instr = ppc_inst(0);
 	int type = 0;
 	int size = 0;
-	unsigned long ea;
+	unsigned long ea = 0;
 
 	/* Disable breakpoints during exception handling */
 	hw_breakpoint_disable();
@@ -580,18 +403,20 @@ int hw_breakpoint_handler(struct die_args *args)
 		wp_get_instr_detail(regs, &instr, &type, &size, &ea);
 
 	for (i = 0; i < nr_wp_slots(); i++) {
+		struct arch_hw_breakpoint *info;
+
 		bp[i] = __this_cpu_read(bp_per_reg[i]);
 		if (!bp[i])
 			continue;
 
-		info[i] = counter_arch_bp(bp[i]);
-		info[i]->type &= ~HW_BRK_TYPE_EXTRANEOUS_IRQ;
+		info = counter_arch_bp(bp[i]);
+		info->type &= ~HW_BRK_TYPE_EXTRANEOUS_IRQ;
 
-		if (wp_check_constraints(regs, instr, ea, type, size, info[i])) {
+		if (wp_check_constraints(regs, instr, ea, type, size, info)) {
 			if (!IS_ENABLED(CONFIG_PPC_8xx) &&
 			    ppc_inst_equal(instr, ppc_inst(0))) {
-				handler_error(bp[i], info[i]);
-				info[i] = NULL;
+				handler_error(bp[i]);
+				bp[i] = NULL;
 				err = 1;
 				continue;
 			}
@@ -607,8 +432,14 @@ int hw_breakpoint_handler(struct die_args *args)
 		goto reset;
 
 	if (!nr_hit) {
-		rc = NOTIFY_DONE;
-		goto out;
+		/* Workaround for Power10 DD1 */
+		if (!IS_ENABLED(CONFIG_PPC_8xx) && mfspr(SPRN_PVR) == 0x800100 &&
+		    is_octword_vsx_instr(type, size)) {
+			handle_p10dd1_spurious_exception(bp, hit, ea);
+		} else {
+			rc = NOTIFY_DONE;
+			goto out;
+		}
 	}
 
 	/*
@@ -619,10 +450,10 @@ int hw_breakpoint_handler(struct die_args *args)
 	 */
 	if (ptrace_bp) {
 		for (i = 0; i < nr_wp_slots(); i++) {
-			if (!hit[i])
+			if (!hit[i] || !is_ptrace_bp(bp[i]))
 				continue;
 			perf_bp_event(bp[i], regs);
-			info[i] = NULL;
+			bp[i] = NULL;
 		}
 		rc = NOTIFY_DONE;
 		goto reset;
@@ -633,13 +464,13 @@ int hw_breakpoint_handler(struct die_args *args)
 			for (i = 0; i < nr_wp_slots(); i++) {
 				if (!hit[i])
 					continue;
-				larx_stcx_err(bp[i], info[i]);
-				info[i] = NULL;
+				larx_stcx_err(bp[i]);
+				bp[i] = NULL;
 			}
 			goto reset;
 		}
 
-		if (!stepping_handler(regs, bp, info, hit, instr))
+		if (!stepping_handler(regs, bp, hit, instr))
 			goto reset;
 	}
 
@@ -650,15 +481,15 @@ int hw_breakpoint_handler(struct die_args *args)
 	for (i = 0; i < nr_wp_slots(); i++) {
 		if (!hit[i])
 			continue;
-		if (!(info[i]->type & HW_BRK_TYPE_EXTRANEOUS_IRQ))
+		if (!(counter_arch_bp(bp[i])->type & HW_BRK_TYPE_EXTRANEOUS_IRQ))
 			perf_bp_event(bp[i], regs);
 	}
 
 reset:
 	for (i = 0; i < nr_wp_slots(); i++) {
-		if (!info[i])
+		if (!bp[i])
 			continue;
-		__set_breakpoint(i, info[i]);
+		__set_breakpoint(i, counter_arch_bp(bp[i]));
 	}
 
 out:
@@ -669,27 +500,33 @@ NOKPROBE_SYMBOL(hw_breakpoint_handler);
 
 /*
  * Handle single-step exceptions following a DABR hit.
+ *
+ * Called in atomic context.
  */
 static int single_step_dabr_instruction(struct die_args *args)
 {
 	struct pt_regs *regs = args->regs;
-	struct perf_event *bp = NULL;
-	struct arch_hw_breakpoint *info;
-	int i;
 	bool found = false;
 
 	/*
 	 * Check if we are single-stepping as a result of a
 	 * previous HW Breakpoint exception
 	 */
-	for (i = 0; i < nr_wp_slots(); i++) {
-		bp = current->thread.last_hit_ubp[i];
+	for (int i = 0; i < nr_wp_slots(); i++) {
+		struct perf_event *bp;
+		struct arch_hw_breakpoint *info;
+
+		bp = __this_cpu_read(bp_per_reg[i]);
 
 		if (!bp)
 			continue;
 
-		found = true;
 		info = counter_arch_bp(bp);
+
+		if (!info->perf_single_step)
+			continue;
+
+		found = true;
 
 		/*
 		 * We shall invoke the user-defined callback function in the
@@ -698,26 +535,16 @@ static int single_step_dabr_instruction(struct die_args *args)
 		 */
 		if (!(info->type & HW_BRK_TYPE_EXTRANEOUS_IRQ))
 			perf_bp_event(bp, regs);
-		current->thread.last_hit_ubp[i] = NULL;
-	}
 
-	if (!found)
-		return NOTIFY_DONE;
-
-	for (i = 0; i < nr_wp_slots(); i++) {
-		bp = __this_cpu_read(bp_per_reg[i]);
-		if (!bp)
-			continue;
-
-		info = counter_arch_bp(bp);
-		__set_breakpoint(i, info);
+		info->perf_single_step = false;
+		__set_breakpoint(i, counter_arch_bp(bp));
 	}
 
 	/*
 	 * If the process was being single-stepped by ptrace, let the
 	 * other single-step actions occur (e.g. generate SIGTRAP).
 	 */
-	if (test_thread_flag(TIF_SINGLESTEP))
+	if (!found || test_thread_flag(TIF_SINGLESTEP))
 		return NOTIFY_DONE;
 
 	return NOTIFY_STOP;
@@ -726,6 +553,8 @@ NOKPROBE_SYMBOL(single_step_dabr_instruction);
 
 /*
  * Handle debug exception notifications.
+ *
+ * Called in atomic context.
  */
 int hw_breakpoint_exceptions_notify(
 		struct notifier_block *unused, unsigned long val, void *data)

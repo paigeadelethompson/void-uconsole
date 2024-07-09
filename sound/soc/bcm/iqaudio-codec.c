@@ -127,10 +127,16 @@ static int snd_rpi_iqaudio_codec_init(struct snd_soc_pcm_runtime *rtd)
 	snd_soc_dapm_disable_pin(&rtd->card->dapm, "AUX Jack");
 	snd_soc_dapm_sync(&rtd->card->dapm);
 
-	/* Set bclk ratio to align with codec's BCLK rate */
+	/* Impose BCLK ratios otherwise the codec may cheat */
 	ret = snd_soc_dai_set_bclk_ratio(cpu_dai, 64);
 	if (ret) {
 		dev_err(rtd->dev, "Failed to set CPU BLCK ratio\n");
+		return ret;
+	}
+
+	ret = snd_soc_dai_set_bclk_ratio(codec_dai, 64);
+	if (ret) {
+		dev_err(rtd->dev, "Failed to set codec BCLK ratio\n");
 		return ret;
 	}
 
@@ -143,6 +149,7 @@ static int snd_rpi_iqaudio_codec_hw_params(struct snd_pcm_substream *substream,
 					   struct snd_pcm_hw_params *params)
 {
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_dai *codec_dai = asoc_rtd_to_codec(rtd, 0);
 	unsigned int samplerate = params_rate(params);
 
 	switch (samplerate) {
@@ -152,15 +159,17 @@ static int snd_rpi_iqaudio_codec_hw_params(struct snd_pcm_substream *substream,
 	case 48000:
 	case 96000:
 		pll_out = DA7213_PLL_FREQ_OUT_98304000;
-		return 0;
+		break;
 	case 44100:
 	case 88200:
 		pll_out = DA7213_PLL_FREQ_OUT_90316800;
-		return 0;
+		break;
 	default:
 		dev_err(rtd->dev,"Unsupported samplerate %d\n", samplerate);
 		return -EINVAL;
 	}
+
+	return snd_soc_dai_set_pll(codec_dai, 0, DA7213_SYSCLK_PLL, 0, pll_out);
 }
 
 static const struct snd_soc_ops snd_rpi_iqaudio_codec_ops = {
@@ -178,9 +187,9 @@ static struct snd_soc_dai_link snd_rpi_iqaudio_codec_dai[] = {
 				  SND_SOC_DAIFMT_CBM_CFM,
 	.init			= snd_rpi_iqaudio_codec_init,
 	.ops			= &snd_rpi_iqaudio_codec_ops,
-	.symmetric_rates	= 1,
+	.symmetric_rate	= 1,
 	.symmetric_channels	= 1,
-	.symmetric_samplebits	= 1,
+	.symmetric_sample_bits	= 1,
 	SND_SOC_DAILINK_REG(rpi_iqaudio),
 },
 };
@@ -245,7 +254,8 @@ static int snd_rpi_iqaudio_codec_probe(struct platform_device *pdev)
 
 static int snd_rpi_iqaudio_codec_remove(struct platform_device *pdev)
 {
-	return snd_soc_unregister_card(&snd_rpi_iqaudio_codec);
+	snd_soc_unregister_card(&snd_rpi_iqaudio_codec);
+	return 0;
 }
 
 static const struct of_device_id iqaudio_of_match[] = {

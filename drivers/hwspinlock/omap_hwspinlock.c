@@ -2,11 +2,12 @@
 /*
  * OMAP hardware spinlock driver
  *
- * Copyright (C) 2010-2015 Texas Instruments Incorporated - http://www.ti.com
+ * Copyright (C) 2010-2021 Texas Instruments Incorporated - https://www.ti.com
  *
  * Contact: Simon Que <sque@ti.com>
  *          Hari Kanigeri <h-kanigeri2@ti.com>
  *          Ohad Ben-Cohen <ohad@wizery.com>
+ *          Suman Anna <s-anna@ti.com>
  */
 
 #include <linux/kernel.h>
@@ -93,11 +94,9 @@ static int omap_hwspinlock_probe(struct platform_device *pdev)
 	 * the module SYSSTATUS register
 	 */
 	pm_runtime_enable(&pdev->dev);
-	ret = pm_runtime_get_sync(&pdev->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&pdev->dev);
+	ret = pm_runtime_resume_and_get(&pdev->dev);
+	if (ret < 0)
 		goto runtime_err;
-	}
 
 	/* Determine number of locks */
 	i = readl(io_base + SYSSTATUS_OFFSET);
@@ -146,7 +145,7 @@ runtime_err:
 	return ret;
 }
 
-static int omap_hwspinlock_remove(struct platform_device *pdev)
+static void omap_hwspinlock_remove(struct platform_device *pdev)
 {
 	struct hwspinlock_device *bank = platform_get_drvdata(pdev);
 	int ret;
@@ -154,16 +153,15 @@ static int omap_hwspinlock_remove(struct platform_device *pdev)
 	ret = hwspin_lock_unregister(bank);
 	if (ret) {
 		dev_err(&pdev->dev, "%s failed: %d\n", __func__, ret);
-		return ret;
+		return;
 	}
 
 	pm_runtime_disable(&pdev->dev);
-
-	return 0;
 }
 
 static const struct of_device_id omap_hwspinlock_of_match[] = {
 	{ .compatible = "ti,omap4-hwspinlock", },
+	{ .compatible = "ti,am64-hwspinlock", },
 	{ .compatible = "ti,am654-hwspinlock", },
 	{ /* end */ },
 };
@@ -171,10 +169,10 @@ MODULE_DEVICE_TABLE(of, omap_hwspinlock_of_match);
 
 static struct platform_driver omap_hwspinlock_driver = {
 	.probe		= omap_hwspinlock_probe,
-	.remove		= omap_hwspinlock_remove,
+	.remove_new	= omap_hwspinlock_remove,
 	.driver		= {
 		.name	= "omap_hwspinlock",
-		.of_match_table = of_match_ptr(omap_hwspinlock_of_match),
+		.of_match_table = omap_hwspinlock_of_match,
 	},
 };
 

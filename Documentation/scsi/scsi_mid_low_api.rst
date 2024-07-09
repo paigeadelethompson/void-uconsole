@@ -436,7 +436,7 @@ Details::
     *
     *      Defined in: drivers/scsi/hosts.c .
     **/
-    struct Scsi_Host * scsi_host_alloc(struct scsi_host_template * sht,
+    struct Scsi_Host * scsi_host_alloc(const struct scsi_host_template * sht,
 				    int privsize)
 
 
@@ -731,7 +731,7 @@ Details::
     *      Notes: If 'no_async_abort' is defined this callback
     *  	will be invoked from scsi_eh thread. No other commands
     *	will then be queued on current host during eh.
-    *	Otherwise it will be called whenever scsi_times_out()
+    *	Otherwise it will be called whenever scsi_timeout()
     *      is called due to a command timeout.
     *
     *      Optionally defined in: LLD
@@ -1095,10 +1095,6 @@ of interest:
 		 - maximum number of commands that can be queued on devices
                    controlled by the host. Overridden by LLD calls to
                    scsi_change_queue_depth().
-    unchecked_isa_dma
-		 - 1=>only use bottom 16 MB of ram (ISA DMA addressing
-                   restriction), 0=>can use full 32 bit (or better) DMA
-                   address space
     no_async_abort
 		 - 1=>Asynchronous aborts are not supported
 		 - 0=>Timed-out commands will be aborted asynchronously
@@ -1176,10 +1172,9 @@ Members of interest:
                    of 0 implies a successfully completed command (and all
                    data (if any) has been transferred to or from the SCSI
                    target device). 'result' is a 32 bit unsigned integer that
-                   can be viewed as 4 related bytes. The SCSI status value is
-                   in the LSB. See include/scsi/scsi.h status_byte(),
-                   msg_byte(), host_byte() and driver_byte() macros and
-                   related constants.
+                   can be viewed as 2 related bytes. The SCSI status value is
+                   in the LSB. See include/scsi/scsi.h status_byte() and
+                   host_byte() macros and related constants.
     sense_buffer
 		 - an array (maximum size: SCSI_SENSE_BUFFERSIZE bytes) that
                    should be written when the SCSI status (LSB of 'result')
@@ -1195,11 +1190,11 @@ Members of interest:
 		 - pointer to scsi_device object that this command is
                    associated with.
     resid
-		 - an LLD should set this signed integer to the requested
+		 - an LLD should set this unsigned integer to the requested
                    transfer length (i.e. 'request_bufflen') less the number
                    of bytes that are actually transferred. 'resid' is
                    preset to 0 so an LLD can ignore it if it cannot detect
-                   underruns (overruns should be rare). If possible an LLD
+                   underruns (overruns should not be reported). An LLD
                    should set 'resid' prior to invoking 'done'. The most
                    interesting case is data transfers from a SCSI target
                    device (e.g. READs) that underrun.

@@ -42,26 +42,25 @@ struct ehci_hcd_mv {
 	int (*set_vbus)(unsigned int vbus);
 };
 
-static void ehci_clock_enable(struct ehci_hcd_mv *ehci_mv)
-{
-	clk_prepare_enable(ehci_mv->clk);
-}
-
-static void ehci_clock_disable(struct ehci_hcd_mv *ehci_mv)
-{
-	clk_disable_unprepare(ehci_mv->clk);
-}
-
 static int mv_ehci_enable(struct ehci_hcd_mv *ehci_mv)
 {
-	ehci_clock_enable(ehci_mv);
-	return phy_init(ehci_mv->phy);
+	int retval;
+
+	retval = clk_prepare_enable(ehci_mv->clk);
+	if (retval)
+		return retval;
+
+	retval = phy_init(ehci_mv->phy);
+	if (retval)
+		clk_disable_unprepare(ehci_mv->clk);
+
+	return retval;
 }
 
 static void mv_ehci_disable(struct ehci_hcd_mv *ehci_mv)
 {
 	phy_exit(ehci_mv->phy);
-	ehci_clock_disable(ehci_mv);
+	clk_disable_unprepare(ehci_mv->clk);
 }
 
 static int mv_ehci_reset(struct usb_hcd *hcd)
@@ -143,8 +142,7 @@ static int mv_ehci_probe(struct platform_device *pdev)
 		goto err_put_hcd;
 	}
 
-	r = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	ehci_mv->base = devm_ioremap_resource(&pdev->dev, r);
+	ehci_mv->base = devm_platform_get_and_ioremap_resource(pdev, 0, &r);
 	if (IS_ERR(ehci_mv->base)) {
 		retval = PTR_ERR(ehci_mv->base);
 		goto err_put_hcd;
@@ -236,7 +234,7 @@ err_put_hcd:
 	return retval;
 }
 
-static int mv_ehci_remove(struct platform_device *pdev)
+static void mv_ehci_remove(struct platform_device *pdev)
 {
 	struct usb_hcd *hcd = platform_get_drvdata(pdev);
 	struct ehci_hcd_mv *ehci_mv = hcd_to_ehci_hcd_mv(hcd);
@@ -255,11 +253,7 @@ static int mv_ehci_remove(struct platform_device *pdev)
 	}
 
 	usb_put_hcd(hcd);
-
-	return 0;
 }
-
-MODULE_ALIAS("mv-ehci");
 
 static const struct platform_device_id ehci_id_table[] = {
 	{"pxa-u2oehci", 0},
@@ -285,7 +279,7 @@ static const struct of_device_id ehci_mv_dt_ids[] = {
 
 static struct platform_driver ehci_mv_driver = {
 	.probe = mv_ehci_probe,
-	.remove = mv_ehci_remove,
+	.remove_new = mv_ehci_remove,
 	.shutdown = mv_ehci_shutdown,
 	.driver = {
 		.name = "mv-ehci",

@@ -92,9 +92,6 @@ struct v4l2_m2m_queue_ctx {
  *		%TRANS_QUEUED, %TRANS_RUNNING and %TRANS_ABORT.
  * @finished: Wait queue used to signalize when a job queue finished.
  * @priv: Instance private data
- * @cap_detached: Current job's capture buffer has been detached
- * @det_list: List of detached (post-job but still in flight) capture buffers
- * @det_empty: Wait queue signalled when det_list goes empty
  *
  * The memory to memory context is specific to a file handle, NOT to e.g.
  * a device.
@@ -123,11 +120,6 @@ struct v4l2_m2m_ctx {
 	wait_queue_head_t		finished;
 
 	void				*priv;
-
-	/* Detached buffer handling */
-	bool	cap_detached;
-	struct list_head		det_list;
-	wait_queue_head_t		det_empty;
 };
 
 /**
@@ -335,45 +327,6 @@ void v4l2_m2m_suspend(struct v4l2_m2m_dev *m2m_dev);
 void v4l2_m2m_resume(struct v4l2_m2m_dev *m2m_dev);
 
 /**
- * v4l2_m2m_cap_buf_detach() - detach the capture buffer from the job and
- * return it.
- *
- * @m2m_dev: opaque pointer to the internal data to handle M2M context
- * @m2m_ctx: m2m context assigned to the instance given by struct &v4l2_m2m_ctx
- *
- * This function is designed to be used in conjunction with
- * v4l2_m2m_buf_done_and_job_finish(). It allows the next job to start
- * execution before the capture buffer is returned to the user which can be
- * important if the underlying processing has multiple phases that are more
- * efficiently executed in parallel.
- *
- * If used then it must be called before v4l2_m2m_buf_done_and_job_finish()
- * as otherwise the buffer will have already gone.
- *
- * It is the callers reponsibilty to ensure that all detached buffers are
- * returned.
- */
-struct vb2_v4l2_buffer *v4l2_m2m_cap_buf_detach(struct v4l2_m2m_dev *m2m_dev,
-						struct v4l2_m2m_ctx *m2m_ctx);
-
-/**
- * v4l2_m2m_cap_buf_return() - return a capture buffer, previously detached
- * with v4l2_m2m_cap_buf_detach() to the user.
- *
- * @m2m_dev: opaque pointer to the internal data to handle M2M context
- * @m2m_ctx: m2m context assigned to the instance given by struct &v4l2_m2m_ctx
- * @buf: the buffer to return
- * @state: vb2 buffer state passed to v4l2_m2m_buf_done().
- *
- * Buffers returned by this function will be returned to the user in the order
- * of the original jobs rather than the order in which this function is called.
- */
-void v4l2_m2m_cap_buf_return(struct v4l2_m2m_dev *m2m_dev,
-			     struct v4l2_m2m_ctx *m2m_ctx,
-			     struct vb2_v4l2_buffer *buf,
-			     enum vb2_buffer_state state);
-
-/**
  * v4l2_m2m_reqbufs() - multi-queue-aware REQBUFS multiplexer
  *
  * @file: pointer to struct &file
@@ -533,15 +486,20 @@ __poll_t v4l2_m2m_poll(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
  * @vma: pointer to struct &vm_area_struct
  *
  * Call from driver's mmap() function. Will handle mmap() for both queues
- * seamlessly for videobuffer, which will receive normal per-queue offsets and
- * proper videobuf queue pointers. The differentiation is made outside videobuf
- * by adding a predefined offset to buffers from one of the queues and
- * subtracting it before passing it back to videobuf. Only drivers (and
+ * seamlessly for the video buffer, which will receive normal per-queue offsets
+ * and proper vb2 queue pointers. The differentiation is made outside
+ * vb2 by adding a predefined offset to buffers from one of the queues
+ * and subtracting it before passing it back to vb2. Only drivers (and
  * thus applications) receive modified offsets.
  */
 int v4l2_m2m_mmap(struct file *file, struct v4l2_m2m_ctx *m2m_ctx,
 		  struct vm_area_struct *vma);
 
+#ifndef CONFIG_MMU
+unsigned long v4l2_m2m_get_unmapped_area(struct file *file, unsigned long addr,
+					 unsigned long len, unsigned long pgoff,
+					 unsigned long flags);
+#endif
 /**
  * v4l2_m2m_init() - initialize per-driver m2m data
  *
@@ -586,7 +544,7 @@ void v4l2_m2m_release(struct v4l2_m2m_dev *m2m_dev);
  * @m2m_dev: opaque pointer to the internal data to handle M2M context
  * @drv_priv: driver's instance private data
  * @queue_init: a callback for queue type-specific initialization function
- *	to be used for initializing videobuf_queues
+ *	to be used for initializing vb2_queues
  *
  * Usually called from driver's ``open()`` function.
  */
@@ -621,7 +579,7 @@ void v4l2_m2m_ctx_release(struct v4l2_m2m_ctx *m2m_ctx);
  * @m2m_ctx: m2m context assigned to the instance given by struct &v4l2_m2m_ctx
  * @vbuf: pointer to struct &vb2_v4l2_buffer
  *
- * Call from videobuf_queue_ops->ops->buf_queue, videobuf_queue_ops callback.
+ * Call from vb2_queue_ops->ops->buf_queue, vb2_queue_ops callback.
  */
 void v4l2_m2m_buf_queue(struct v4l2_m2m_ctx *m2m_ctx,
 			struct vb2_v4l2_buffer *vbuf);
@@ -635,7 +593,14 @@ void v4l2_m2m_buf_queue(struct v4l2_m2m_ctx *m2m_ctx,
 static inline
 unsigned int v4l2_m2m_num_src_bufs_ready(struct v4l2_m2m_ctx *m2m_ctx)
 {
-	return m2m_ctx->out_q_ctx.num_rdy;
+	unsigned int num_buf_rdy;
+	unsigned long flags;
+
+	spin_lock_irqsave(&m2m_ctx->out_q_ctx.rdy_spinlock, flags);
+	num_buf_rdy = m2m_ctx->out_q_ctx.num_rdy;
+	spin_unlock_irqrestore(&m2m_ctx->out_q_ctx.rdy_spinlock, flags);
+
+	return num_buf_rdy;
 }
 
 /**
@@ -647,7 +612,14 @@ unsigned int v4l2_m2m_num_src_bufs_ready(struct v4l2_m2m_ctx *m2m_ctx)
 static inline
 unsigned int v4l2_m2m_num_dst_bufs_ready(struct v4l2_m2m_ctx *m2m_ctx)
 {
-	return m2m_ctx->cap_q_ctx.num_rdy;
+	unsigned int num_buf_rdy;
+	unsigned long flags;
+
+	spin_lock_irqsave(&m2m_ctx->cap_q_ctx.rdy_spinlock, flags);
+	num_buf_rdy = m2m_ctx->cap_q_ctx.num_rdy;
+	spin_unlock_irqrestore(&m2m_ctx->cap_q_ctx.rdy_spinlock, flags);
+
+	return num_buf_rdy;
 }
 
 /**

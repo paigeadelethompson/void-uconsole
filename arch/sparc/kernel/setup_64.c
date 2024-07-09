@@ -165,8 +165,6 @@ extern int root_mountflags;
 
 char reboot_command[COMMAND_LINE_SIZE];
 
-static struct pt_regs fake_swapper_regs = { { 0, }, 0, 0, 0, 0 };
-
 static void __init per_cpu_patch(void)
 {
 	struct cpuid_patch_entry *p;
@@ -638,7 +636,7 @@ void __init setup_arch(char **cmdline_p)
 {
 	/* Initialize PROM console and command line. */
 	*cmdline_p = prom_getbootargs();
-	strlcpy(boot_command_line, *cmdline_p, COMMAND_LINE_SIZE);
+	strscpy(boot_command_line, *cmdline_p, COMMAND_LINE_SIZE);
 	parse_early_param();
 
 	boot_flags_init(*cmdline_p);
@@ -660,8 +658,6 @@ void __init setup_arch(char **cmdline_p)
 #ifdef CONFIG_BLK_DEV_RAM
 	rd_image_start = ram_flags & RAMDISK_IMAGE_START_MASK;
 #endif
-
-	task_thread_info(&init_task)->kregs = &fake_swapper_regs;
 
 #ifdef CONFIG_IP_PNP
 	if (!ic_set_manually) {
@@ -688,7 +684,6 @@ void __init setup_arch(char **cmdline_p)
 
 	paging_init();
 	init_sparc64_elf_hwcap();
-	smp_fill_in_cpu_possible_map();
 	/*
 	 * Once the OF device tree and MDESC have been setup and nr_cpus has
 	 * been parsed, we know the list of possible cpus.  Therefore we can

@@ -42,6 +42,7 @@ struct usb_conn_info {
 
 	struct power_supply_desc desc;
 	struct power_supply *charger;
+	bool initial_detection;
 };
 
 /*
@@ -83,13 +84,15 @@ static void usb_conn_detect_cable(struct work_struct *work)
 	else
 		role = USB_ROLE_NONE;
 
-	dev_dbg(info->dev, "role %d/%d, gpios: id %d, vbus %d\n",
-		info->last_role, role, id, vbus);
+	dev_dbg(info->dev, "role %s -> %s, gpios: id %d, vbus %d\n",
+		usb_role_string(info->last_role), usb_role_string(role), id, vbus);
 
-	if (info->last_role == role) {
-		dev_warn(info->dev, "repeated role: %d\n", role);
+	if (!info->initial_detection && info->last_role == role) {
+		dev_warn(info->dev, "repeated role: %s\n", usb_role_string(role));
 		return;
 	}
+
+	info->initial_detection = false;
 
 	if (info->last_role == USB_ROLE_HOST && info->vbus)
 		regulator_disable(info->vbus);
@@ -149,15 +152,32 @@ static int usb_charger_get_property(struct power_supply *psy,
 	return 0;
 }
 
-static int usb_conn_probe(struct platform_device *pdev)
+static int usb_conn_psy_register(struct usb_conn_info *info)
 {
-	struct device *dev = &pdev->dev;
-	struct power_supply_desc *desc;
-	struct usb_conn_info *info;
+	struct device *dev = info->dev;
+	struct power_supply_desc *desc = &info->desc;
 	struct power_supply_config cfg = {
 		.of_node = dev->of_node,
 	};
-	bool need_vbus = true;
+
+	desc->name = "usb-charger";
+	desc->properties = usb_charger_properties;
+	desc->num_properties = ARRAY_SIZE(usb_charger_properties);
+	desc->get_property = usb_charger_get_property;
+	desc->type = POWER_SUPPLY_TYPE_USB;
+	cfg.drv_data = info;
+
+	info->charger = devm_power_supply_register(dev, desc, &cfg);
+	if (IS_ERR(info->charger))
+		dev_err(dev, "Unable to register charger\n");
+
+	return PTR_ERR_OR_ZERO(info->charger);
+}
+
+static int usb_conn_probe(struct platform_device *pdev)
+{
+	struct device *dev = &pdev->dev;
+	struct usb_conn_info *info;
 	int ret = 0;
 
 	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
@@ -187,36 +207,21 @@ static int usb_conn_probe(struct platform_device *pdev)
 
 	INIT_DELAYED_WORK(&info->dw_det, usb_conn_detect_cable);
 
-	/*
-	 * If the USB connector is a child of a USB port and that port already provides the VBUS
-	 * supply, there's no need for the USB connector to provide it again.
-	 */
-	if (dev->parent && dev->parent->of_node) {
-		if (of_find_property(dev->parent->of_node, "vbus-supply", NULL))
-			need_vbus = false;
-	}
+	info->vbus = devm_regulator_get_optional(dev, "vbus");
+	if (PTR_ERR(info->vbus) == -ENODEV)
+		info->vbus = NULL;
 
-	if (!need_vbus) {
-		info->vbus = devm_regulator_get_optional(dev, "vbus");
-		if (PTR_ERR(info->vbus) == -ENODEV)
-			info->vbus = NULL;
-	} else {
-		info->vbus = devm_regulator_get(dev, "vbus");
-	}
-
-	if (IS_ERR(info->vbus)) {
-		if (PTR_ERR(info->vbus) != -EPROBE_DEFER)
-			dev_err(dev, "failed to get vbus: %ld\n", PTR_ERR(info->vbus));
-		return PTR_ERR(info->vbus);
-	}
+	if (IS_ERR(info->vbus))
+		return dev_err_probe(dev, PTR_ERR(info->vbus), "failed to get vbus\n");
 
 	info->role_sw = usb_role_switch_get(dev);
-	if (IS_ERR(info->role_sw)) {
-		if (PTR_ERR(info->role_sw) != -EPROBE_DEFER)
-			dev_err(dev, "failed to get role switch\n");
+	if (IS_ERR(info->role_sw))
+		return dev_err_probe(dev, PTR_ERR(info->role_sw),
+				     "failed to get role switch\n");
 
-		return PTR_ERR(info->role_sw);
-	}
+	ret = usb_conn_psy_register(info);
+	if (ret)
+		goto put_role_sw;
 
 	if (info->id_gpiod) {
 		info->id_irq = gpiod_to_irq(info->id_gpiod);
@@ -252,23 +257,11 @@ static int usb_conn_probe(struct platform_device *pdev)
 		}
 	}
 
-	desc = &info->desc;
-	desc->name = "usb-charger";
-	desc->properties = usb_charger_properties;
-	desc->num_properties = ARRAY_SIZE(usb_charger_properties);
-	desc->get_property = usb_charger_get_property;
-	desc->type = POWER_SUPPLY_TYPE_USB;
-	cfg.drv_data = info;
-
-	info->charger = devm_power_supply_register(dev, desc, &cfg);
-	if (IS_ERR(info->charger)) {
-		dev_err(dev, "Unable to register charger\n");
-		return PTR_ERR(info->charger);
-	}
-
 	platform_set_drvdata(pdev, info);
+	device_set_wakeup_capable(&pdev->dev, true);
 
 	/* Perform initial detection */
+	info->initial_detection = true;
 	usb_conn_queue_dwork(info, 0);
 
 	return 0;
@@ -278,7 +271,7 @@ put_role_sw:
 	return ret;
 }
 
-static int usb_conn_remove(struct platform_device *pdev)
+static void usb_conn_remove(struct platform_device *pdev)
 {
 	struct usb_conn_info *info = platform_get_drvdata(pdev);
 
@@ -288,13 +281,19 @@ static int usb_conn_remove(struct platform_device *pdev)
 		regulator_disable(info->vbus);
 
 	usb_role_switch_put(info->role_sw);
-
-	return 0;
 }
 
 static int __maybe_unused usb_conn_suspend(struct device *dev)
 {
 	struct usb_conn_info *info = dev_get_drvdata(dev);
+
+	if (device_may_wakeup(dev)) {
+		if (info->id_gpiod)
+			enable_irq_wake(info->id_irq);
+		if (info->vbus_gpiod)
+			enable_irq_wake(info->vbus_irq);
+		return 0;
+	}
 
 	if (info->id_gpiod)
 		disable_irq(info->id_irq);
@@ -309,6 +308,14 @@ static int __maybe_unused usb_conn_suspend(struct device *dev)
 static int __maybe_unused usb_conn_resume(struct device *dev)
 {
 	struct usb_conn_info *info = dev_get_drvdata(dev);
+
+	if (device_may_wakeup(dev)) {
+		if (info->id_gpiod)
+			disable_irq_wake(info->id_irq);
+		if (info->vbus_gpiod)
+			disable_irq_wake(info->vbus_irq);
+		return 0;
+	}
 
 	pinctrl_pm_select_default_state(dev);
 
@@ -333,7 +340,7 @@ MODULE_DEVICE_TABLE(of, usb_conn_dt_match);
 
 static struct platform_driver usb_conn_driver = {
 	.probe		= usb_conn_probe,
-	.remove		= usb_conn_remove,
+	.remove_new	= usb_conn_remove,
 	.driver		= {
 		.name	= "usb-conn-gpio",
 		.pm	= &usb_conn_pm_ops,

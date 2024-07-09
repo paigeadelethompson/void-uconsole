@@ -402,7 +402,7 @@ int32_t dwc_otg_hcd_handle_rx_status_q_level_intr(dwc_otg_hcd_t * dwc_otg_hcd)
 			hc->xfer_count += grxsts.b.bcnt;
 			hc->xfer_buff += grxsts.b.bcnt;
 		}
-
+		break;
 	case DWC_GRXSTS_PKTSTS_IN_XFER_COMP:
 	case DWC_GRXSTS_PKTSTS_DATA_TOGGLE_ERR:
 	case DWC_GRXSTS_PKTSTS_CH_HALTED:
@@ -2332,7 +2332,7 @@ void dwc_otg_fiq_unmangle_isoc(dwc_otg_hcd_t *hcd, dwc_otg_qh_t *qh, dwc_otg_qtd
 int dwc_otg_fiq_unsetup_per_dma(dwc_otg_hcd_t *hcd, dwc_otg_qh_t *qh, dwc_otg_qtd_t *qtd, uint32_t num)
 {
 	dwc_hc_t *hc = qh->channel;
-	struct fiq_dma_blob *blob = hcd->fiq_dmab;
+	struct fiq_dma_channel *split_dma = hcd->fiq_dmab;
 	struct fiq_channel_state *st = &hcd->fiq_state->channel[num];
 	uint8_t *ptr = NULL;
 	int index = 0, len = 0;
@@ -2352,7 +2352,7 @@ int dwc_otg_fiq_unsetup_per_dma(dwc_otg_hcd_t *hcd, dwc_otg_qh_t *qh, dwc_otg_qt
 
 		for (i = 0; i < st->dma_info.index; i++) {
 			len += st->dma_info.slot_len[i];
-			dwc_memcpy(ptr, &blob->channel[num].index[i].buf[0], st->dma_info.slot_len[i]);
+			dwc_memcpy(ptr, &split_dma[num].index[i].buf[0], st->dma_info.slot_len[i]);
 			ptr += st->dma_info.slot_len[i];
 		}
 		return len;

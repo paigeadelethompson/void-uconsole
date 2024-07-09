@@ -870,7 +870,7 @@ static void do_abort_syn_rcv(struct sock *child, struct sock *parent)
 		 * created only after 3 way handshake is done.
 		 */
 		sock_orphan(child);
-		percpu_counter_inc((child)->sk_prot->orphan_count);
+		INC_ORPHAN_COUNT(child);
 		chtls_release_resources(child);
 		chtls_conn_done(child);
 	} else {
@@ -1063,14 +1063,13 @@ static void chtls_pass_accept_rpl(struct sk_buff *skb,
 	opt2 |= WND_SCALE_EN_V(WSCALE_OK(tp));
 	rpl5->opt0 = cpu_to_be64(opt0);
 	rpl5->opt2 = cpu_to_be32(opt2);
-	rpl5->iss = cpu_to_be32((prandom_u32() & ~7UL) - 1);
+	rpl5->iss = cpu_to_be32((get_random_u32() & ~7UL) - 1);
 	set_wr_txq(skb, CPL_PRIORITY_SETUP, csk->port_id);
 	t4_set_arp_err_handler(skb, sk, chtls_accept_rpl_arp_failure);
 	cxgb4_l2t_send(csk->egress_dev, skb, csk->l2t_entry);
 }
 
-static void inet_inherit_port(struct inet_hashinfo *hash_info,
-			      struct sock *lsk, struct sock *newsk)
+static void inet_inherit_port(struct sock *lsk, struct sock *newsk)
 {
 	local_bh_disable();
 	__inet_inherit_port(lsk, newsk);
@@ -1150,7 +1149,7 @@ static struct sock *chtls_recv_sock(struct sock *lsk,
 		fl6.daddr = ip6h->saddr;
 		fl6.fl6_dport = inet_rsk(oreq)->ir_rmt_port;
 		fl6.fl6_sport = htons(inet_rsk(oreq)->ir_num);
-		security_req_classify_flow(oreq, flowi6_to_flowi(&fl6));
+		security_req_classify_flow(oreq, flowi6_to_flowi_common(&fl6));
 		dst = ip6_dst_lookup_flow(sock_net(lsk), lsk, &fl6, NULL);
 		if (IS_ERR(dst))
 			goto free_sk;
@@ -1228,18 +1227,19 @@ static struct sock *chtls_recv_sock(struct sock *lsk,
 	csk->sndbuf = csk->snd_win;
 	csk->ulp_mode = ULP_MODE_TLS;
 	step = cdev->lldi->nrxq / cdev->lldi->nchan;
-	csk->rss_qid = cdev->lldi->rxq_ids[port_id * step];
 	rxq_idx = port_id * step;
+	rxq_idx += cdev->round_robin_cnt++ % step;
+	csk->rss_qid = cdev->lldi->rxq_ids[rxq_idx];
 	csk->txq_idx = (rxq_idx < cdev->lldi->ntxq) ? rxq_idx :
 			port_id * step;
 	csk->sndbuf = newsk->sk_sndbuf;
 	csk->smac_idx = ((struct port_info *)netdev_priv(ndev))->smt_idx;
 	RCV_WSCALE(tp) = select_rcv_wscale(tcp_full_space(newsk),
-					   sock_net(newsk)->
-						ipv4.sysctl_tcp_window_scaling,
+					   READ_ONCE(sock_net(newsk)->
+						     ipv4.sysctl_tcp_window_scaling),
 					   tp->window_clamp);
 	neigh_release(n);
-	inet_inherit_port(&tcp_hashinfo, lsk, newsk);
+	inet_inherit_port(lsk, newsk);
 	csk_set_flag(csk, CSK_CONN_INLINE);
 	bh_unlock_sock(newsk); /* tcp_create_openreq_child ->sk_clone_lock */
 
@@ -1383,7 +1383,7 @@ static void chtls_pass_accept_request(struct sock *sk,
 #endif
 	}
 	if (req->tcpopt.wsf <= 14 &&
-	    sock_net(sk)->ipv4.sysctl_tcp_window_scaling) {
+	    READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_window_scaling)) {
 		inet_rsk(oreq)->wscale_ok = 1;
 		inet_rsk(oreq)->snd_wscale = req->tcpopt.wsf;
 	}
@@ -1391,7 +1391,7 @@ static void chtls_pass_accept_request(struct sock *sk,
 	th_ecn = tcph->ece && tcph->cwr;
 	if (th_ecn) {
 		ect = !INET_ECN_is_not_ect(ip_dsfield);
-		ecn_ok = sock_net(sk)->ipv4.sysctl_tcp_ecn;
+		ecn_ok = READ_ONCE(sock_net(sk)->ipv4.sysctl_tcp_ecn);
 		if ((!ect && ecn_ok) || tcp_ca_needs_ecn(sk))
 			inet_rsk(oreq)->ecn_ok = 1;
 	}
@@ -1466,7 +1466,7 @@ static void make_established(struct sock *sk, u32 snd_isn, unsigned int opt)
 	tp->write_seq = snd_isn;
 	tp->snd_nxt = snd_isn;
 	tp->snd_una = snd_isn;
-	inet_sk(sk)->inet_id = prandom_u32();
+	atomic_set(&inet_sk(sk)->inet_id, get_random_u16());
 	assign_rxopt(sk, opt);
 
 	if (tp->rcv_wnd > (RCV_BUFSIZ_M << 10))
@@ -2133,7 +2133,7 @@ static void chtls_abort_req_rss(struct sock *sk, struct sk_buff *skb)
 		sk->sk_err = ETIMEDOUT;
 
 		if (!sock_flag(sk, SOCK_DEAD))
-			sk->sk_error_report(sk);
+			sk_error_report(sk);
 
 		if (sk->sk_state == TCP_SYN_RECV && !abort_syn_rcv(sk, skb))
 			return;
@@ -2259,7 +2259,7 @@ static void chtls_rx_ack(struct sock *sk, struct sk_buff *skb)
 
 		if (tp->snd_una != snd_una) {
 			tp->snd_una = snd_una;
-			tp->rcv_tstamp = tcp_time_stamp(tp);
+			tp->rcv_tstamp = tcp_jiffies32;
 			if (tp->snd_una == tp->snd_nxt &&
 			    !csk_flag_nochk(csk, CSK_TX_FAILOVER))
 				csk_reset_flag(csk, CSK_TX_WAIT_IDLE);

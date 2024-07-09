@@ -301,6 +301,7 @@ static int adm1266_config_gpio(struct adm1266_data *data)
 	data->gc.label = name;
 	data->gc.parent = &data->client->dev;
 	data->gc.owner = THIS_MODULE;
+	data->gc.can_sleep = true;
 	data->gc.base = -1;
 	data->gc.names = data->gpio_names;
 	data->gc.ngpio = ARRAY_SIZE(data->gpio_names);
@@ -339,8 +340,6 @@ static void adm1266_init_debugfs(struct adm1266_data *data)
 		return;
 
 	data->debugfs_dir = debugfs_create_dir(data->client->name, root);
-	if (!data->debugfs_dir)
-		return;
 
 	debugfs_create_devm_seqfile(&data->client->dev, "sequencer_state", data->debugfs_dir,
 				    adm1266_state_read);
@@ -501,8 +500,7 @@ static struct i2c_driver adm1266_driver = {
 		   .name = "adm1266",
 		   .of_match_table = adm1266_of_match,
 		  },
-	.probe_new = adm1266_probe,
-	.remove = pmbus_do_remove,
+	.probe = adm1266_probe,
 	.id_table = adm1266_id,
 };
 
@@ -511,3 +509,4 @@ module_i2c_driver(adm1266_driver);
 MODULE_AUTHOR("Alexandru Tachici <alexandru.tachici@analog.com>");
 MODULE_DESCRIPTION("PMBus driver for Analog Devices ADM1266");
 MODULE_LICENSE("GPL v2");
+MODULE_IMPORT_NS(PMBUS);

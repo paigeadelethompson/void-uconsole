@@ -135,6 +135,7 @@ static void meson_mx_sdhc_start_cmd(struct mmc_host *mmc,
 				    struct mmc_command *cmd)
 {
 	struct meson_mx_sdhc_host *host = mmc_priv(mmc);
+	bool manual_stop = false;
 	u32 ictl, send;
 	int pack_len;
 
@@ -172,11 +173,26 @@ static void meson_mx_sdhc_start_cmd(struct mmc_host *mmc,
 		else
 			/* software flush: */
 			ictl |= MESON_SDHC_ICTL_DATA_XFER_OK;
+
+		/*
+		 * Mimic the logic from the vendor driver where (only)
+		 * SD_IO_RW_EXTENDED commands with more than one block set the
+		 * MESON_SDHC_MISC_MANUAL_STOP bit. This fixes the firmware
+		 * download in the brcmfmac driver for a BCM43362/1 card.
+		 * Without this sdio_memcpy_toio() (with a size of 219557
+		 * bytes) times out if MESON_SDHC_MISC_MANUAL_STOP is not set.
+		 */
+		manual_stop = cmd->data->blocks > 1 &&
+			      cmd->opcode == SD_IO_RW_EXTENDED;
 	} else {
 		pack_len = 0;
 
 		ictl |= MESON_SDHC_ICTL_RESP_OK;
 	}
+
+	regmap_update_bits(host->regmap, MESON_SDHC_MISC,
+			   MESON_SDHC_MISC_MANUAL_STOP,
+			   manual_stop ? MESON_SDHC_MISC_MANUAL_STOP : 0);
 
 	if (cmd->opcode == MMC_STOP_TRANSMISSION)
 		send |= MESON_SDHC_SEND_DATA_STOP;
@@ -253,7 +269,7 @@ static int meson_mx_sdhc_enable_clks(struct mmc_host *mmc)
 static int meson_mx_sdhc_set_clk(struct mmc_host *mmc, struct mmc_ios *ios)
 {
 	struct meson_mx_sdhc_host *host = mmc_priv(mmc);
-	u32 rx_clk_phase;
+	u32 val, rx_clk_phase;
 	int ret;
 
 	meson_mx_sdhc_disable_clks(mmc);
@@ -274,27 +290,11 @@ static int meson_mx_sdhc_set_clk(struct mmc_host *mmc, struct mmc_ios *ios)
 		mmc->actual_clock = clk_get_rate(host->sd_clk);
 
 		/*
-		 * according to Amlogic the following latching points are
-		 * selected with empirical values, there is no (known) formula
-		 * to calculate these.
+		 * Phase 90 should work in most cases. For data transmission,
+		 * meson_mx_sdhc_execute_tuning() will find a accurate value
 		 */
-		if (mmc->actual_clock > 100000000) {
-			rx_clk_phase = 1;
-		} else if (mmc->actual_clock > 45000000) {
-			if (ios->signal_voltage == MMC_SIGNAL_VOLTAGE_330)
-				rx_clk_phase = 15;
-			else
-				rx_clk_phase = 11;
-		} else if (mmc->actual_clock >= 25000000) {
-			rx_clk_phase = 15;
-		} else if (mmc->actual_clock > 5000000) {
-			rx_clk_phase = 23;
-		} else if (mmc->actual_clock > 1000000) {
-			rx_clk_phase = 55;
-		} else {
-			rx_clk_phase = 1061;
-		}
-
+		regmap_read(host->regmap, MESON_SDHC_CLKC, &val);
+		rx_clk_phase = FIELD_GET(MESON_SDHC_CLKC_CLK_DIV, val) / 4;
 		regmap_update_bits(host->regmap, MESON_SDHC_CLK2,
 				   MESON_SDHC_CLK2_RX_CLK_PHASE,
 				   FIELD_PREP(MESON_SDHC_CLK2_RX_CLK_PHASE,
@@ -365,14 +365,14 @@ static void meson_mx_sdhc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 static int meson_mx_sdhc_map_dma(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct mmc_data *data = mrq->data;
-	int dma_len;
+	unsigned int dma_len;
 
 	if (!data)
 		return 0;
 
 	dma_len = dma_map_sg(mmc_dev(mmc), data->sg, data->sg_len,
 			     mmc_get_dma_dir(data));
-	if (dma_len <= 0) {
+	if (!dma_len) {
 		dev_err(mmc_dev(mmc), "dma_map_sg failed\n");
 		return -ENOMEM;
 	}
@@ -495,7 +495,7 @@ static int meson_mx_sdhc_execute_tuning(struct mmc_host *mmc, u32 opcode)
 }
 
 static const struct mmc_host_ops meson_mx_sdhc_ops = {
-	.hw_reset			= meson_mx_sdhc_hw_reset,
+	.card_hw_reset			= meson_mx_sdhc_hw_reset,
 	.request			= meson_mx_sdhc_request,
 	.set_ios			= meson_mx_sdhc_set_ios,
 	.card_busy			= meson_mx_sdhc_card_busy,
@@ -760,6 +760,11 @@ static void meson_mx_sdhc_init_hw(struct mmc_host *mmc)
 	regmap_write(host->regmap, MESON_SDHC_ISTA, MESON_SDHC_ISTA_ALL_IRQS);
 }
 
+static void meason_mx_mmc_free_host(void *data)
+{
+       mmc_free_host(data);
+}
+
 static int meson_mx_sdhc_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -772,8 +777,7 @@ static int meson_mx_sdhc_probe(struct platform_device *pdev)
 	if (!mmc)
 		return -ENOMEM;
 
-	ret = devm_add_action_or_reset(dev, (void(*)(void *))mmc_free_host,
-				       mmc);
+	ret = devm_add_action_or_reset(dev, meason_mx_mmc_free_host, mmc);
 	if (ret) {
 		dev_err(dev, "Failed to register mmc_free_host action\n");
 		return ret;
@@ -838,6 +842,11 @@ static int meson_mx_sdhc_probe(struct platform_device *pdev)
 		goto err_disable_pclk;
 
 	irq = platform_get_irq(pdev, 0);
+	if (irq < 0) {
+		ret = irq;
+		goto err_disable_pclk;
+	}
+
 	ret = devm_request_threaded_irq(dev, irq, meson_mx_sdhc_irq,
 					meson_mx_sdhc_irq_thread, IRQF_ONESHOT,
 					NULL, host);
@@ -855,7 +864,7 @@ err_disable_pclk:
 	return ret;
 }
 
-static int meson_mx_sdhc_remove(struct platform_device *pdev)
+static void meson_mx_sdhc_remove(struct platform_device *pdev)
 {
 	struct meson_mx_sdhc_host *host = platform_get_drvdata(pdev);
 
@@ -864,8 +873,6 @@ static int meson_mx_sdhc_remove(struct platform_device *pdev)
 	meson_mx_sdhc_disable_clks(host->mmc);
 
 	clk_disable_unprepare(host->pclk);
-
-	return 0;
 }
 
 static const struct meson_mx_sdhc_data meson_mx_sdhc_data_meson8 = {
@@ -900,7 +907,7 @@ MODULE_DEVICE_TABLE(of, meson_mx_sdhc_of_match);
 
 static struct platform_driver meson_mx_sdhc_driver = {
 	.probe   = meson_mx_sdhc_probe,
-	.remove  = meson_mx_sdhc_remove,
+	.remove_new = meson_mx_sdhc_remove,
 	.driver  = {
 		.name = "meson-mx-sdhc",
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,

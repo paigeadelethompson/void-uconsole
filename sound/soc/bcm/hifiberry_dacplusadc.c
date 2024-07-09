@@ -229,12 +229,13 @@ static int snd_rpi_hifiberry_dacplusadc_hw_params(
 	int ret = 0;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
 	int channels = params_channels(params);
-	int width = 32;
+	int width = snd_pcm_format_width(params_format(params));
+
+	/* Using powers of 2 allows for an integer clock divisor */
+	width = width <= 16 ? 16 : 32;
 
 	if (snd_rpi_hifiberry_is_dacpro) {
 		struct snd_soc_component *component = asoc_rtd_to_codec(rtd, 0)->component;
-
-		width = snd_pcm_format_physical_width(params_format(params));
 
 		snd_rpi_hifiberry_dacplusadc_set_sclk(component,
 			params_rate(params));

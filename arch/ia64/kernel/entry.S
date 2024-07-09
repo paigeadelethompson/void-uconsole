@@ -37,7 +37,7 @@
  *	pNonSys:	!pSys
  */
 
-
+#include <linux/export.h>
 #include <linux/pgtable.h>
 #include <asm/asmmacro.h>
 #include <asm/cache.h>
@@ -49,7 +49,6 @@
 #include <asm/thread_info.h>
 #include <asm/unistd.h>
 #include <asm/ftrace.h>
-#include <asm/export.h>
 
 #include "minstate.h"
 
@@ -1420,10 +1419,9 @@ END(ftrace_stub)
 
 #endif /* CONFIG_FUNCTION_TRACER */
 
-#define __SYSCALL(nr, entry, nargs) data8 entry
+#define __SYSCALL(nr, entry) data8 entry
 	.rodata
 	.align 8
 	.globl sys_call_table
 sys_call_table:
 #include <asm/syscall_table.h>
-#undef __SYSCALL

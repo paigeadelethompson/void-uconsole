@@ -29,6 +29,8 @@ extern void arch_send_call_function_ipi_mask(const struct cpumask *mask);
 extern void __init smp_init_cpus(void);
 extern void first_lines_of_secondary(void);
 extern const char *arc_platform_smp_cpuinfo(void);
+extern void arc_platform_smp_wait_to_boot(int);
+extern void start_kernel_secondary(void);
 
 /*
  * API expected BY platform smp code (FROM arch smp code)
@@ -105,7 +107,6 @@ static inline const char *arc_platform_smp_cpuinfo(void)
 #include <asm/spinlock.h>
 
 extern arch_spinlock_t smp_atomic_ops_lock;
-extern arch_spinlock_t smp_bitops_lock;
 
 #define atomic_ops_lock(flags)	do {		\
 	local_irq_save(flags);			\
@@ -117,23 +118,10 @@ extern arch_spinlock_t smp_bitops_lock;
 	local_irq_restore(flags);		\
 } while (0)
 
-#define bitops_lock(flags)	do {		\
-	local_irq_save(flags);			\
-	arch_spin_lock(&smp_bitops_lock);	\
-} while (0)
-
-#define bitops_unlock(flags) do {		\
-	arch_spin_unlock(&smp_bitops_lock);	\
-	local_irq_restore(flags);		\
-} while (0)
-
 #else /* !CONFIG_SMP */
 
 #define atomic_ops_lock(flags)		local_irq_save(flags)
 #define atomic_ops_unlock(flags)	local_irq_restore(flags)
-
-#define bitops_lock(flags)		local_irq_save(flags)
-#define bitops_unlock(flags)		local_irq_restore(flags)
 
 #endif /* !CONFIG_SMP */
 

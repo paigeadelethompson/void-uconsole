@@ -147,7 +147,7 @@ static int start_ts_capture(struct budget *budget)
 static int budget_read_fe_status(struct dvb_frontend *fe,
 				 enum fe_status *status)
 {
-	struct budget *budget = (struct budget *) fe->dvb->priv;
+	struct budget *budget = fe->dvb->priv;
 	int synced;
 	int ret;
 
@@ -180,7 +180,8 @@ static void vpeirq(struct tasklet_struct *t)
 	u32 count;
 
 	/* Ensure streamed PCI data is synced to CPU */
-	pci_dma_sync_sg_for_cpu(budget->dev->pci, budget->pt.slist, budget->pt.nents, PCI_DMA_FROMDEVICE);
+	dma_sync_sg_for_cpu(&budget->dev->pci->dev, budget->pt.slist,
+			    budget->pt.nents, DMA_FROM_DEVICE);
 
 	/* nearest lower position divisible by 188 */
 	newdma -= newdma % 188;
@@ -307,7 +308,7 @@ int ttpci_budget_debiwrite(struct budget *budget, u32 config, int addr,
 static int budget_start_feed(struct dvb_demux_feed *feed)
 {
 	struct dvb_demux *demux = feed->demux;
-	struct budget *budget = (struct budget *) demux->priv;
+	struct budget *budget = demux->priv;
 	int status = 0;
 
 	dprintk(2, "budget: %p\n", budget);
@@ -326,7 +327,7 @@ static int budget_start_feed(struct dvb_demux_feed *feed)
 static int budget_stop_feed(struct dvb_demux_feed *feed)
 {
 	struct dvb_demux *demux = feed->demux;
-	struct budget *budget = (struct budget *) demux->priv;
+	struct budget *budget = demux->priv;
 	int status = 0;
 
 	dprintk(2, "budget: %p\n", budget);
@@ -569,7 +570,7 @@ int ttpci_budget_deinit(struct budget *budget)
 
 void ttpci_budget_irq10_handler(struct saa7146_dev *dev, u32 * isr)
 {
-	struct budget *budget = (struct budget *) dev->ext_priv;
+	struct budget *budget = dev->ext_priv;
 
 	dprintk(8, "dev: %p, budget: %p\n", dev, budget);
 
@@ -579,7 +580,7 @@ void ttpci_budget_irq10_handler(struct saa7146_dev *dev, u32 * isr)
 
 void ttpci_budget_set_video_port(struct saa7146_dev *dev, int video_port)
 {
-	struct budget *budget = (struct budget *) dev->ext_priv;
+	struct budget *budget = dev->ext_priv;
 
 	spin_lock(&budget->feedlock);
 	budget->video_port = video_port;

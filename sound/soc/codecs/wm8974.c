@@ -186,7 +186,7 @@ SOC_DAPM_SINGLE("PCM Playback Switch", WM8974_MONOMIX, 0, 1, 0),
 
 /* Boost mixer */
 static const struct snd_kcontrol_new wm8974_boost_mixer[] = {
-SOC_DAPM_SINGLE("Aux Switch", WM8974_INPPGA, 6, 1, 1),
+SOC_DAPM_SINGLE("PGA Switch", WM8974_INPPGA, 6, 1, 1),
 };
 
 /* Input PGA */
@@ -246,8 +246,8 @@ static const struct snd_soc_dapm_route wm8974_dapm_routes[] = {
 
 	/* Boost Mixer */
 	{"ADC", NULL, "Boost Mixer"},
-	{"Boost Mixer", "Aux Switch", "Aux Input"},
-	{"Boost Mixer", NULL, "Input PGA"},
+	{"Boost Mixer", NULL, "Aux Input"},
+	{"Boost Mixer", "PGA Switch", "Input PGA"},
 	{"Boost Mixer", NULL, "MICP"},
 
 	/* Input PGA */
@@ -643,7 +643,7 @@ static struct snd_soc_dai_driver wm8974_dai = {
 		.rates = WM8974_RATES,
 		.formats = WM8974_FORMATS,},
 	.ops = &wm8974_ops,
-	.symmetric_rates = 1,
+	.symmetric_rate = 1,
 };
 
 static const struct regmap_config wm8974_regmap = {
@@ -682,11 +682,9 @@ static const struct snd_soc_component_driver soc_component_dev_wm8974 = {
 	.idle_bias_on		= 1,
 	.use_pmdown_time	= 1,
 	.endianness		= 1,
-	.non_legacy_dai_naming	= 1,
 };
 
-static int wm8974_i2c_probe(struct i2c_client *i2c,
-			    const struct i2c_device_id *id)
+static int wm8974_i2c_probe(struct i2c_client *i2c)
 {
 	struct wm8974_priv *priv;
 	struct regmap *regmap;
@@ -725,7 +723,7 @@ static struct i2c_driver wm8974_i2c_driver = {
 		.name = "wm8974",
 		.of_match_table = wm8974_of_match,
 	},
-	.probe =    wm8974_i2c_probe,
+	.probe = wm8974_i2c_probe,
 	.id_table = wm8974_i2c_id,
 };
 

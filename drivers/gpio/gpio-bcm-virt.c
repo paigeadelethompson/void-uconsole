@@ -11,7 +11,7 @@
  */
 
 #include <linux/err.h>
-#include <linux/gpio.h>
+#include <linux/gpio/driver.h>
 #include <linux/module.h>
 #include <linux/platform_device.h>
 #include <linux/dma-mapping.h>
@@ -49,7 +49,7 @@ static int brcmvirt_gpio_get(struct gpio_chip *gc, unsigned off)
 	unsigned v;
 	gpio = container_of(gc, struct brcmvirt_gpio, gc);
 	v = readl(gpio->ts_base + off);
-	return (v >> off) & 1;
+	return (s16)((v >> 16) - v) > 0;
 }
 
 static void brcmvirt_gpio_set(struct gpio_chip *gc, unsigned off, int val)
@@ -79,19 +79,20 @@ static int brcmvirt_gpio_probe(struct platform_device *pdev)
 {
 	int err = 0;
 	struct device *dev = &pdev->dev;
-	struct device_node *np = dev->of_node;
+	struct device_node *np = dev_of_node(dev);
 	struct device_node *fw_node;
 	struct rpi_firmware *fw;
 	struct brcmvirt_gpio *ucb;
 	u32 gpiovirtbuf;
 
-	fw_node = of_parse_phandle(np, "firmware", 0);
+	fw_node = of_get_parent(np);
 	if (!fw_node) {
 		dev_err(dev, "Missing firmware node\n");
 		return -ENOENT;
 	}
 
-	fw = rpi_firmware_get(fw_node);
+	fw = devm_rpi_firmware_get(&pdev->dev, fw_node);
+	of_node_put(fw_node);
 	if (!fw)
 		return -EPROBE_DEFER;
 
@@ -145,11 +146,10 @@ static int brcmvirt_gpio_probe(struct platform_device *pdev)
 		}
 		ucb->bus_addr = 0;
 	}
+	ucb->gc.parent = dev;
 	ucb->gc.label = MODULE_NAME;
 	ucb->gc.owner = THIS_MODULE;
-	//ucb->gc.dev = dev;
-	ucb->gc.of_node = np;
-	ucb->gc.base = 100;
+	ucb->gc.base = -1;
 	ucb->gc.ngpio = NUM_GPIO;
 
 	ucb->gc.direction_input = brcmvirt_gpio_dir_in;

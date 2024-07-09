@@ -21,13 +21,20 @@ enum lockdep_wait_type {
 	LD_WAIT_SPIN,		/* spin loops, raw_spinlock_t etc.. */
 
 #ifdef CONFIG_PROVE_RAW_LOCK_NESTING
-	LD_WAIT_CONFIG,		/* CONFIG_PREEMPT_LOCK, spinlock_t etc.. */
+	LD_WAIT_CONFIG,		/* preemptible in PREEMPT_RT, spinlock_t etc.. */
 #else
 	LD_WAIT_CONFIG = LD_WAIT_SPIN,
 #endif
 	LD_WAIT_SLEEP,		/* sleeping locks, mutex_t etc.. */
 
 	LD_WAIT_MAX,		/* must be last */
+};
+
+enum lockdep_lock_type {
+	LD_LOCK_NORMAL = 0,	/* normal, catch all */
+	LD_LOCK_PERCPU,		/* percpu */
+	LD_LOCK_WAIT_OVERRIDE,	/* annotation */
+	LD_LOCK_MAX,
 };
 
 #ifdef CONFIG_LOCKDEP
@@ -46,7 +53,7 @@ enum lockdep_wait_type {
  * NR_LOCKDEP_CACHING_CLASSES ... Number of classes
  * cached in the instance of lockdep_map
  *
- * Currently main class (subclass == 0) and signle depth subclass
+ * Currently main class (subclass == 0) and single depth subclass
  * are cached in lockdep_map. This optimization is mainly targeting
  * on rq->lock. double_rq_lock() acquires this highly competitive with
  * single depth.
@@ -78,6 +85,11 @@ struct lock_trace;
 
 #define LOCKSTAT_POINTS		4
 
+struct lockdep_map;
+typedef int (*lock_cmp_fn)(const struct lockdep_map *a,
+			   const struct lockdep_map *b);
+typedef void (*lock_print_fn)(const struct lockdep_map *map);
+
 /*
  * The lock-class itself. The order of the structure members matters.
  * reinit_class() zeroes the key member and all subsequent members.
@@ -103,6 +115,9 @@ struct lock_class {
 	struct list_head		locks_after, locks_before;
 
 	const struct lockdep_subclass_key *key;
+	lock_cmp_fn			cmp_fn;
+	lock_print_fn			print_fn;
+
 	unsigned int			subclass;
 	unsigned int			dep_gen_id;
 
@@ -119,8 +134,10 @@ struct lock_class {
 	int				name_version;
 	const char			*name;
 
-	short				wait_type_inner;
-	short				wait_type_outer;
+	u8				wait_type_inner;
+	u8				wait_type_outer;
+	u8				lock_type;
+	/* u8				hole; */
 
 #ifdef CONFIG_LOCK_STAT
 	unsigned long			contention_point[LOCKSTAT_POINTS];
@@ -169,8 +186,10 @@ struct lockdep_map {
 	struct lock_class_key		*key;
 	struct lock_class		*class_cache[NR_LOCKDEP_CACHING_CLASSES];
 	const char			*name;
-	short				wait_type_outer; /* can be taken in this context */
-	short				wait_type_inner; /* presents this context */
+	u8				wait_type_outer; /* can be taken in this context */
+	u8				wait_type_inner; /* presents this context */
+	u8				lock_type;
+	/* u8				hole; */
 #ifdef CONFIG_LOCK_STAT
 	int				cpu;
 	unsigned long			ip;

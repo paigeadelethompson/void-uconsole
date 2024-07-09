@@ -8,11 +8,12 @@
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of_address.h>
-#include <linux/of_platform.h>
+#include <linux/of.h>
 #include <linux/platform_device.h>
 #include <linux/printk.h>
 #include <linux/clk.h>
+#include <linux/reset.h>
+#include <linux/delay.h>
 
 #define RNG_CTRL	0x0
 #define RNG_STATUS	0x4
@@ -27,11 +28,15 @@
 
 #define RNG_INT_OFF	0x1
 
+#define RNG_FIFO_WORDS	4
+#define RNG_US_PER_WORD	34 /* Tuned for throughput */
+
 struct bcm2835_rng_priv {
 	struct hwrng rng;
 	void __iomem *base;
 	bool mask_interrupts;
 	struct clk *clk;
+	struct reset_control *reset;
 };
 
 static inline struct bcm2835_rng_priv *to_rng_priv(struct hwrng *rng)
@@ -62,19 +67,23 @@ static inline void rng_writel(struct bcm2835_rng_priv *priv, u32 val,
 static int bcm2835_rng_read(struct hwrng *rng, void *buf, size_t max,
 			       bool wait)
 {
+	u32 retries = 1000000/(RNG_FIFO_WORDS * RNG_US_PER_WORD);
 	struct bcm2835_rng_priv *priv = to_rng_priv(rng);
 	u32 max_words = max / sizeof(u32);
 	u32 num_words, count;
 
-	while ((rng_readl(priv, RNG_STATUS) >> 24) == 0) {
-		if (!wait)
+	num_words = rng_readl(priv, RNG_STATUS) >> 24;
+
+	while (!num_words) {
+		if (!wait || !retries)
 			return 0;
-		cpu_relax();
+		retries--;
+		usleep_range((u32)RNG_US_PER_WORD,
+			     (u32)RNG_US_PER_WORD * RNG_FIFO_WORDS);
+		num_words = rng_readl(priv, RNG_STATUS) >> 24;
 	}
 
-	num_words = rng_readl(priv, RNG_STATUS) >> 24;
-	if (num_words > max_words)
-		num_words = max_words;
+	num_words = min(num_words, max_words);
 
 	for (count = 0; count < num_words; count++)
 		((u32 *)buf)[count] = rng_readl(priv, RNG_DATA);
@@ -88,11 +97,13 @@ static int bcm2835_rng_init(struct hwrng *rng)
 	int ret = 0;
 	u32 val;
 
-	if (!IS_ERR(priv->clk)) {
-		ret = clk_prepare_enable(priv->clk);
-		if (ret)
-			return ret;
-	}
+	ret = clk_prepare_enable(priv->clk);
+	if (ret)
+		return ret;
+
+	ret = reset_control_reset(priv->reset);
+	if (ret)
+		return ret;
 
 	if (priv->mask_interrupts) {
 		/* mask the interrupt */
@@ -117,8 +128,7 @@ static void bcm2835_rng_cleanup(struct hwrng *rng)
 	/* disable rng hardware */
 	rng_writel(priv, 0, RNG_CTRL);
 
-	if (!IS_ERR(priv->clk))
-		clk_disable_unprepare(priv->clk);
+	clk_disable_unprepare(priv->clk);
 }
 
 struct bcm2835_rng_of_data {
@@ -157,9 +167,13 @@ static int bcm2835_rng_probe(struct platform_device *pdev)
 		return PTR_ERR(priv->base);
 
 	/* Clock is optional on most platforms */
-	priv->clk = devm_clk_get(dev, NULL);
-	if (PTR_ERR(priv->clk) == -EPROBE_DEFER)
-		return -EPROBE_DEFER;
+	priv->clk = devm_clk_get_optional(dev, NULL);
+	if (IS_ERR(priv->clk))
+		return PTR_ERR(priv->clk);
+
+	priv->reset = devm_reset_control_get_optional_exclusive(dev, NULL);
+	if (IS_ERR(priv->reset))
+		return PTR_ERR(priv->reset);
 
 	priv->rng.name = pdev->name;
 	priv->rng.init = bcm2835_rng_init;

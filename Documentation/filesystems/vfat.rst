@@ -50,7 +50,7 @@ VFAT MOUNT OPTIONS
 	Normally utime(2) checks current process is owner of
 	the file, or it has CAP_FOWNER capability. But FAT
 	filesystem doesn't have uid/gid on disk, so normal
-	check is too unflexible. With this option you can
+	check is too inflexible. With this option you can
 	relax it.
 
 **codepage=###**
@@ -189,7 +189,7 @@ VFAT MOUNT OPTIONS
 **discard**
 	If set, issues discard/TRIM commands to the block
 	device when blocks are freed. This is useful for SSD devices
-	and sparse/thinly-provisoned LUNs.
+	and sparse/thinly-provisioned LUNs.
 
 **nfs=stale_rw|nostale_ro**
 	Enable this only if you want to export the FAT filesystem

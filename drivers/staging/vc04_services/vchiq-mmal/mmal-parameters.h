@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 /*
- * Broadcom BM2835 V4L2 driver
+ * Broadcom BCM2835 V4L2 driver
  *
  * Copyright © 2013 Raspberry Pi (Trading) Ltd.
  *
@@ -21,6 +21,8 @@
 
 #ifndef MMAL_PARAMETERS_H
 #define MMAL_PARAMETERS_H
+
+#include <linux/math.h>
 
 /** Common parameter ID group, used with many types of component. */
 #define MMAL_PARAMETER_GROUP_COMMON		(0 << 16)
@@ -279,11 +281,8 @@ enum mmal_parameter_camera_type {
 	MMAL_PARAMETER_GAMMA,
 		/**< Takes a @ref MMAL_PARAMETER_CDN_T */
 	MMAL_PARAMETER_CDN,
-};
-
-struct mmal_parameter_rational {
-	s32 num;    /**< Numerator */
-	s32 den;    /**< Denominator */
+		/**< Takes a @ref MMAL_PARAMETER_BOOLEAN_T */
+	MMAL_PARAMETER_JPEG_IJG_SCALING,
 };
 
 enum mmal_parameter_camera_config_timestamp_mode {
@@ -301,9 +300,9 @@ enum mmal_parameter_camera_config_timestamp_mode {
 
 struct mmal_parameter_fps_range {
 	/**< Low end of the permitted framerate range */
-	struct mmal_parameter_rational	fps_low;
+	struct s32_fract	fps_low;
 	/**< High end of the permitted framerate range */
-	struct mmal_parameter_rational	fps_high;
+	struct s32_fract	fps_high;
 };
 
 /* camera configuration parameter */
@@ -398,6 +397,9 @@ enum mmal_parameter_imagefx {
 	MMAL_PARAM_IMAGEFX_COLOURPOINT,
 	MMAL_PARAM_IMAGEFX_COLOURBALANCE,
 	MMAL_PARAM_IMAGEFX_CARTOON,
+	MMAL_PARAM_IMAGEFX_DEINTERLACE_DOUBLE,
+	MMAL_PARAM_IMAGEFX_DEINTERLACE_ADV,
+	MMAL_PARAM_IMAGEFX_DEINTERLACE_FAST,
 };
 
 enum MMAL_PARAM_FLICKERAVOID {
@@ -409,8 +411,8 @@ enum MMAL_PARAM_FLICKERAVOID {
 };
 
 struct mmal_parameter_awbgains {
-	struct mmal_parameter_rational r_gain;	/**< Red gain */
-	struct mmal_parameter_rational b_gain;	/**< Blue gain */
+	struct s32_fract r_gain;	/**< Red gain */
+	struct s32_fract b_gain;	/**< Blue gain */
 };
 
 /** Manner of video rate control */
@@ -679,6 +681,9 @@ enum mmal_parameter_video_type {
 
 	/**< Take a @ref MMAL_PARAMETER_BOOLEAN_T */
 	MMAL_PARAMETER_VIDEO_VALIDATE_TIMESTAMPS,
+
+	/**< Takes a @ref MMAL_PARAMETER_BOOLEAN_T */
+	MMAL_PARAMETER_VIDEO_STOP_ON_PAR_COLOUR_CHANGE,
 };
 
 /** Valid mirror modes */
@@ -809,6 +814,43 @@ struct mmal_parameter_displayregion {
 	u32 alpha;
 };
 
+enum mmal_interlace_type {
+	/* The data is not interlaced, it is progressive scan */
+	MMAL_INTERLACE_PROGRESSIVE,
+	/*
+	 * The data is interlaced, fields sent separately in temporal order, with
+	 * upper field first
+	 */
+	MMAL_INTERLACE_FIELD_SINGLE_UPPER_FIRST,
+	/*
+	 * The data is interlaced, fields sent separately in temporal order, with
+	 * lower field first
+	 */
+	MMAL_INTERLACE_FIELD_SINGLE_LOWER_FIRST,
+	/*
+	 * The data is interlaced, two fields sent together line interleaved,
+	 * with the upper field temporally earlier
+	 */
+	MMAL_INTERLACE_FIELDS_INTERLEAVED_UPPER_FIRST,
+	/*
+	 * The data is interlaced, two fields sent together line interleaved,
+	 * with the lower field temporally earlier
+	 */
+	MMAL_INTERLACE_FIELDS_INTERLEAVED_LOWER_FIRST,
+	/*
+	 * The stream may contain a mixture of progressive and interlaced
+	 * frames
+	 */
+	MMAL_INTERLACE_MIXED,
+
+	MMAL_INTERLACE_DUMMY = 0x7FFFFFFF
+};
+
+struct mmal_parameter_video_interlace_type {
+	enum mmal_interlace_type mode;	/* The interlace type of the content */
+	u32 bRepeatFirstField;		/* Whether to repeat the first field */
+};
+
 #define MMAL_MAX_IMAGEFX_PARAMETERS 5
 
 struct mmal_parameter_imagefx_parameters {
@@ -851,7 +893,7 @@ struct mmal_parameter_camera_info {
 };
 
 struct mmal_parameter_ccm {
-	struct mmal_parameter_rational ccm[3][3];
+	struct s32_fract ccm[3][3];
 	s32 offsets[3];
 };
 
@@ -905,7 +947,7 @@ struct mmal_parameter_black_level {
 struct mmal_parameter_geq {
 	u32 enabled;
 	u32 offset;
-	struct mmal_parameter_rational slope;
+	struct s32_fract slope;
 };
 
 #define MMAL_NUM_GAMMA_PTS 33
@@ -929,15 +971,15 @@ struct mmal_parameter_colour_denoise {
 struct mmal_parameter_denoise {
 	u32 enabled;
 	u32 constant;
-	struct mmal_parameter_rational slope;
-	struct mmal_parameter_rational strength;
+	struct s32_fract slope;
+	struct s32_fract strength;
 };
 
 struct mmal_parameter_sharpen {
 	u32 enabled;
-	struct mmal_parameter_rational threshold;
-	struct mmal_parameter_rational strength;
-	struct mmal_parameter_rational limit;
+	struct s32_fract threshold;
+	struct s32_fract strength;
+	struct s32_fract limit;
 };
 
 enum mmal_dpc_mode {

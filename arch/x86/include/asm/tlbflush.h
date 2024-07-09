@@ -2,7 +2,8 @@
 #ifndef _ASM_X86_TLBFLUSH_H
 #define _ASM_X86_TLBFLUSH_H
 
-#include <linux/mm.h>
+#include <linux/mm_types.h>
+#include <linux/mmu_notifier.h>
 #include <linux/sched.h>
 
 #include <asm/processor.h>
@@ -12,10 +13,14 @@
 #include <asm/invpcid.h>
 #include <asm/pti.h>
 #include <asm/processor-flags.h>
+#include <asm/pgtable.h>
+
+DECLARE_PER_CPU(u64, tlbstate_untag_mask);
 
 void __flush_tlb_all(void);
 
 #define TLB_FLUSH_ALL	-1UL
+#define TLB_GENERATION_INVALID	0
 
 void cr4_update_irqsoff(unsigned long set, unsigned long clear);
 unsigned long cr4_read_shadow(void);
@@ -83,28 +88,11 @@ struct tlb_state {
 	/* Last user mm for optimizing IBPB */
 	union {
 		struct mm_struct	*last_user_mm;
-		unsigned long		last_user_mm_ibpb;
+		unsigned long		last_user_mm_spec;
 	};
 
 	u16 loaded_mm_asid;
 	u16 next_asid;
-
-	/*
-	 * We can be in one of several states:
-	 *
-	 *  - Actively using an mm.  Our CPU's bit will be set in
-	 *    mm_cpumask(loaded_mm) and is_lazy == false;
-	 *
-	 *  - Not using a real mm.  loaded_mm == &init_mm.  Our CPU's bit
-	 *    will not be set in mm_cpumask(&init_mm) and is_lazy == false.
-	 *
-	 *  - Lazily using a real mm.  loaded_mm != &init_mm, our bit
-	 *    is set in mm_cpumask(loaded_mm), but is_lazy == true.
-	 *    We're heuristically guessing that the CR3 load we
-	 *    skipped more than makes up for the overhead added by
-	 *    lazy mode.
-	 */
-	bool is_lazy;
 
 	/*
 	 * If set we changed the page tables in such a way that we
@@ -116,6 +104,16 @@ struct tlb_state {
 	 * need to be invalidated.
 	 */
 	bool invalidate_other;
+
+#ifdef CONFIG_ADDRESS_MASKING
+	/*
+	 * Active LAM mode.
+	 *
+	 * X86_CR3_LAM_U57/U48 shifted right by X86_CR3_LAM_U57_BIT or 0 if LAM
+	 * disabled.
+	 */
+	u8 lam;
+#endif
 
 	/*
 	 * Mask that contains TLB_NR_DYN_ASIDS+1 bits to indicate
@@ -151,7 +149,27 @@ struct tlb_state {
 	 */
 	struct tlb_context ctxs[TLB_NR_DYN_ASIDS];
 };
-DECLARE_PER_CPU_SHARED_ALIGNED(struct tlb_state, cpu_tlbstate);
+DECLARE_PER_CPU_ALIGNED(struct tlb_state, cpu_tlbstate);
+
+struct tlb_state_shared {
+	/*
+	 * We can be in one of several states:
+	 *
+	 *  - Actively using an mm.  Our CPU's bit will be set in
+	 *    mm_cpumask(loaded_mm) and is_lazy == false;
+	 *
+	 *  - Not using a real mm.  loaded_mm == &init_mm.  Our CPU's bit
+	 *    will not be set in mm_cpumask(&init_mm) and is_lazy == false.
+	 *
+	 *  - Lazily using a real mm.  loaded_mm != &init_mm, our bit
+	 *    is set in mm_cpumask(loaded_mm), but is_lazy == true.
+	 *    We're heuristically guessing that the CR3 load we
+	 *    skipped more than makes up for the overhead added by
+	 *    lazy mode.
+	 */
+	bool is_lazy;
+};
+DECLARE_PER_CPU_SHARED_ALIGNED(struct tlb_state_shared, cpu_tlbstate_shared);
 
 bool nmi_uaccess_okay(void);
 #define nmi_uaccess_okay nmi_uaccess_okay
@@ -175,7 +193,7 @@ extern void initialize_tlbstate_and_flush(void);
  *  - flush_tlb_page(vma, vmaddr) flushes one page
  *  - flush_tlb_range(vma, start, end) flushes a range of pages
  *  - flush_tlb_kernel_range(start, end) flushes a range of kernel pages
- *  - flush_tlb_others(cpumask, info) flushes TLBs on other cpus
+ *  - flush_tlb_multi(cpumask, info) flushes TLBs on multiple cpus
  *
  * ..but the i386 has somewhat limited tlb flushing capabilities,
  * and page-granular flushes are available only on i486 and up.
@@ -201,14 +219,15 @@ struct flush_tlb_info {
 	unsigned long		start;
 	unsigned long		end;
 	u64			new_tlb_gen;
-	unsigned int		stride_shift;
-	bool			freed_tables;
+	unsigned int		initiating_cpu;
+	u8			stride_shift;
+	u8			freed_tables;
 };
 
 void flush_tlb_local(void);
 void flush_tlb_one_user(unsigned long addr);
 void flush_tlb_one_kernel(unsigned long addr);
-void flush_tlb_others(const struct cpumask *cpumask,
+void flush_tlb_multi(const struct cpumask *cpumask,
 		      const struct flush_tlb_info *info);
 
 #ifdef CONFIG_PARAVIRT
@@ -235,6 +254,18 @@ static inline void flush_tlb_page(struct vm_area_struct *vma, unsigned long a)
 	flush_tlb_mm_range(vma->vm_mm, a, a + PAGE_SIZE, PAGE_SHIFT, false);
 }
 
+static inline bool arch_tlbbatch_should_defer(struct mm_struct *mm)
+{
+	bool should_defer = false;
+
+	/* If remote CPUs need to be flushed then defer batch the flush */
+	if (cpumask_any_but(mm_cpumask(mm), get_cpu()) < nr_cpu_ids)
+		should_defer = true;
+	put_cpu();
+
+	return should_defer;
+}
+
 static inline u64 inc_mm_tlb_gen(struct mm_struct *mm)
 {
 	/*
@@ -246,15 +277,151 @@ static inline u64 inc_mm_tlb_gen(struct mm_struct *mm)
 	return atomic64_inc_return(&mm->context.tlb_gen);
 }
 
-static inline void arch_tlbbatch_add_mm(struct arch_tlbflush_unmap_batch *batch,
-					struct mm_struct *mm)
+static inline void arch_tlbbatch_add_pending(struct arch_tlbflush_unmap_batch *batch,
+					     struct mm_struct *mm,
+					     unsigned long uaddr)
 {
 	inc_mm_tlb_gen(mm);
 	cpumask_or(&batch->cpumask, &batch->cpumask, mm_cpumask(mm));
+	mmu_notifier_arch_invalidate_secondary_tlbs(mm, 0, -1UL);
+}
+
+static inline void arch_flush_tlb_batched_pending(struct mm_struct *mm)
+{
+	flush_tlb_mm(mm);
 }
 
 extern void arch_tlbbatch_flush(struct arch_tlbflush_unmap_batch *batch);
 
+static inline bool pte_flags_need_flush(unsigned long oldflags,
+					unsigned long newflags,
+					bool ignore_access)
+{
+	/*
+	 * Flags that require a flush when cleared but not when they are set.
+	 * Only include flags that would not trigger spurious page-faults.
+	 * Non-present entries are not cached. Hardware would set the
+	 * dirty/access bit if needed without a fault.
+	 */
+	const pteval_t flush_on_clear = _PAGE_DIRTY | _PAGE_PRESENT |
+					_PAGE_ACCESSED;
+	const pteval_t software_flags = _PAGE_SOFTW1 | _PAGE_SOFTW2 |
+					_PAGE_SOFTW3 | _PAGE_SOFTW4 |
+					_PAGE_SAVED_DIRTY;
+	const pteval_t flush_on_change = _PAGE_RW | _PAGE_USER | _PAGE_PWT |
+			  _PAGE_PCD | _PAGE_PSE | _PAGE_GLOBAL | _PAGE_PAT |
+			  _PAGE_PAT_LARGE | _PAGE_PKEY_BIT0 | _PAGE_PKEY_BIT1 |
+			  _PAGE_PKEY_BIT2 | _PAGE_PKEY_BIT3 | _PAGE_NX;
+	unsigned long diff = oldflags ^ newflags;
+
+	BUILD_BUG_ON(flush_on_clear & software_flags);
+	BUILD_BUG_ON(flush_on_clear & flush_on_change);
+	BUILD_BUG_ON(flush_on_change & software_flags);
+
+	/* Ignore software flags */
+	diff &= ~software_flags;
+
+	if (ignore_access)
+		diff &= ~_PAGE_ACCESSED;
+
+	/*
+	 * Did any of the 'flush_on_clear' flags was clleared set from between
+	 * 'oldflags' and 'newflags'?
+	 */
+	if (diff & oldflags & flush_on_clear)
+		return true;
+
+	/* Flush on modified flags. */
+	if (diff & flush_on_change)
+		return true;
+
+	/* Ensure there are no flags that were left behind */
+	if (IS_ENABLED(CONFIG_DEBUG_VM) &&
+	    (diff & ~(flush_on_clear | software_flags | flush_on_change))) {
+		VM_WARN_ON_ONCE(1);
+		return true;
+	}
+
+	return false;
+}
+
+/*
+ * pte_needs_flush() checks whether permissions were demoted and require a
+ * flush. It should only be used for userspace PTEs.
+ */
+static inline bool pte_needs_flush(pte_t oldpte, pte_t newpte)
+{
+	/* !PRESENT -> * ; no need for flush */
+	if (!(pte_flags(oldpte) & _PAGE_PRESENT))
+		return false;
+
+	/* PFN changed ; needs flush */
+	if (pte_pfn(oldpte) != pte_pfn(newpte))
+		return true;
+
+	/*
+	 * check PTE flags; ignore access-bit; see comment in
+	 * ptep_clear_flush_young().
+	 */
+	return pte_flags_need_flush(pte_flags(oldpte), pte_flags(newpte),
+				    true);
+}
+#define pte_needs_flush pte_needs_flush
+
+/*
+ * huge_pmd_needs_flush() checks whether permissions were demoted and require a
+ * flush. It should only be used for userspace huge PMDs.
+ */
+static inline bool huge_pmd_needs_flush(pmd_t oldpmd, pmd_t newpmd)
+{
+	/* !PRESENT -> * ; no need for flush */
+	if (!(pmd_flags(oldpmd) & _PAGE_PRESENT))
+		return false;
+
+	/* PFN changed ; needs flush */
+	if (pmd_pfn(oldpmd) != pmd_pfn(newpmd))
+		return true;
+
+	/*
+	 * check PMD flags; do not ignore access-bit; see
+	 * pmdp_clear_flush_young().
+	 */
+	return pte_flags_need_flush(pmd_flags(oldpmd), pmd_flags(newpmd),
+				    false);
+}
+#define huge_pmd_needs_flush huge_pmd_needs_flush
+
+#ifdef CONFIG_ADDRESS_MASKING
+static inline  u64 tlbstate_lam_cr3_mask(void)
+{
+	u64 lam = this_cpu_read(cpu_tlbstate.lam);
+
+	return lam << X86_CR3_LAM_U57_BIT;
+}
+
+static inline void set_tlbstate_lam_mode(struct mm_struct *mm)
+{
+	this_cpu_write(cpu_tlbstate.lam,
+		       mm->context.lam_cr3_mask >> X86_CR3_LAM_U57_BIT);
+	this_cpu_write(tlbstate_untag_mask, mm->context.untag_mask);
+}
+
+#else
+
+static inline u64 tlbstate_lam_cr3_mask(void)
+{
+	return 0;
+}
+
+static inline void set_tlbstate_lam_mode(struct mm_struct *mm)
+{
+}
+#endif
 #endif /* !MODULE */
 
+static inline void __native_tlb_flush_global(unsigned long cr4)
+{
+	native_write_cr4(cr4 ^ X86_CR4_PGE);
+	native_write_cr4(cr4);
+}
 #endif /* _ASM_X86_TLBFLUSH_H */

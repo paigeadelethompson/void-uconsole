@@ -23,8 +23,6 @@
  *
  */
 
-#include <linux/delay.h>
-
 #include "dce_i2c.h"
 #include "dce_i2c_sw.h"
 #include "include/gpio_service_interface.h"
@@ -339,7 +337,7 @@ static bool start_sync_sw(
 	return false;
 }
 
-void dce_i2c_sw_engine_set_speed(
+static void dce_i2c_sw_engine_set_speed(
 	struct dce_i2c_sw *engine,
 	uint32_t speed)
 {
@@ -353,7 +351,7 @@ void dce_i2c_sw_engine_set_speed(
 		engine->clock_delay = 12;
 }
 
-bool dce_i2c_sw_engine_acquire_engine(
+static bool dce_i2c_sw_engine_acquire_engine(
 	struct dce_i2c_sw *engine,
 	struct ddc *ddc)
 {
@@ -369,6 +367,7 @@ bool dce_i2c_sw_engine_acquire_engine(
 
 	return true;
 }
+
 bool dce_i2c_engine_acquire_sw(
 	struct dce_i2c_sw *dce_i2c_sw,
 	struct ddc *ddc_handle)
@@ -394,12 +393,8 @@ bool dce_i2c_engine_acquire_sw(
 	return result;
 }
 
-
-
-
-void dce_i2c_sw_engine_submit_channel_request(
-	struct dce_i2c_sw *engine,
-	struct i2c_request_transaction_data *req)
+static void dce_i2c_sw_engine_submit_channel_request(struct dce_i2c_sw *engine,
+						     struct i2c_request_transaction_data *req)
 {
 	struct ddc *ddc = engine->ddc;
 	uint16_t clock_delay_div_4 = engine->clock_delay >> 2;
@@ -440,10 +435,10 @@ void dce_i2c_sw_engine_submit_channel_request(
 		I2C_CHANNEL_OPERATION_SUCCEEDED :
 		I2C_CHANNEL_OPERATION_FAILED;
 }
-bool dce_i2c_sw_engine_submit_payload(
-	struct dce_i2c_sw *engine,
-	struct i2c_payload *payload,
-	bool middle_of_transaction)
+
+static bool dce_i2c_sw_engine_submit_payload(struct dce_i2c_sw *engine,
+					     struct i2c_payload *payload,
+					     bool middle_of_transaction)
 {
 	struct i2c_request_transaction_data request;
 

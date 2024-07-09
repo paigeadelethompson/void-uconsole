@@ -125,6 +125,7 @@ static const struct snd_soc_dapm_route audioinjector_audio_map[] = {
 
 static struct snd_soc_card snd_soc_audioinjector = {
 	.name = "audioinjector-pi-soundcard",
+	.owner = THIS_MODULE,
 	.dai_link = audioinjector_pi_soundcard_dai,
 	.num_links = ARRAY_SIZE(audioinjector_pi_soundcard_dai),
 
@@ -158,9 +159,11 @@ static int audioinjector_pi_soundcard_probe(struct platform_device *pdev)
 			}
 	}
 
-	if ((ret = devm_snd_soc_register_card(&pdev->dev, card))) {
-		dev_err(&pdev->dev, "snd_soc_register_card failed (%d)\n", ret);
-	}
+	if ((ret = devm_snd_soc_register_card(&pdev->dev, card)))
+		return dev_err_probe(&pdev->dev, ret, "%s\n", __func__);
+
+	dev_info(&pdev->dev, "successfully loaded\n");
+
 	return ret;
 }
 

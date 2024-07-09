@@ -228,6 +228,10 @@ static void brcmf_fweh_event_worker(struct work_struct *work)
 			  brcmf_fweh_event_name(event->code), event->code,
 			  event->emsg.ifidx, event->emsg.bsscfgidx,
 			  event->emsg.addr);
+		if (event->emsg.bsscfgidx >= BRCMF_MAX_IFS) {
+			bphy_err(drvr, "invalid bsscfg index: %u\n", event->emsg.bsscfgidx);
+			goto event_free;
+		}
 
 		/* convert event message */
 		emsg_be = &event->emsg;
@@ -355,26 +359,42 @@ int brcmf_fweh_activate_events(struct brcmf_if *ifp)
 {
 	struct brcmf_pub *drvr = ifp->drvr;
 	int i, err;
-	s8 eventmask[BRCMF_EVENTING_MASK_LEN];
+	struct eventmsgs_ext *eventmask_msg;
+	u32 msglen;
 
-	memset(eventmask, 0, sizeof(eventmask));
+	msglen = EVENTMSGS_EXT_STRUCT_SIZE + BRCMF_EVENTING_MASK_LEN;
+	eventmask_msg = kzalloc(msglen, GFP_KERNEL);
+	if (!eventmask_msg)
+		return -ENOMEM;
+
 	for (i = 0; i < BRCMF_E_LAST; i++) {
 		if (ifp->drvr->fweh.evt_handler[i]) {
 			brcmf_dbg(EVENT, "enable event %s\n",
 				  brcmf_fweh_event_name(i));
-			setbit(eventmask, i);
+			setbit(eventmask_msg->mask, i);
 		}
 	}
 
 	/* want to handle IF event as well */
 	brcmf_dbg(EVENT, "enable event IF\n");
-	setbit(eventmask, BRCMF_E_IF);
+	setbit(eventmask_msg->mask, BRCMF_E_IF);
 
-	err = brcmf_fil_iovar_data_set(ifp, "event_msgs",
-				       eventmask, BRCMF_EVENTING_MASK_LEN);
+	eventmask_msg->ver = EVENTMSGS_VER;
+	eventmask_msg->command = EVENTMSGS_SET_MASK;
+	eventmask_msg->len = BRCMF_EVENTING_MASK_LEN;
+
+	err = brcmf_fil_iovar_data_set(ifp, "event_msgs_ext", eventmask_msg,
+				       msglen);
+	if (!err)
+		goto end;
+
+	err = brcmf_fil_iovar_data_set(ifp, "event_msgs", eventmask_msg->mask,
+				       BRCMF_EVENTING_MASK_LEN);
 	if (err)
 		bphy_err(drvr, "Set event_msgs error (%d)\n", err);
 
+end:
+	kfree(eventmask_msg);
 	return err;
 }
 
@@ -384,6 +404,7 @@ int brcmf_fweh_activate_events(struct brcmf_if *ifp)
  * @drvr: driver information object.
  * @event_packet: event packet to process.
  * @packet_len: length of the packet
+ * @gfp: memory allocation flags.
  *
  * If the packet buffer contains a firmware event message it will
  * dispatch the event to a registered handler (using worker).

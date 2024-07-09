@@ -367,14 +367,14 @@ static int esdhc_mcf_plat_init(struct sdhci_host *host,
 			       struct pltfm_mcf_data *mcf_data)
 {
 	struct mcf_esdhc_platform_data *plat_data;
+	struct device *dev = mmc_dev(host->mmc);
 
-	if (!host->mmc->parent->platform_data) {
-		dev_err(mmc_dev(host->mmc), "no platform data!\n");
+	if (!dev->platform_data) {
+		dev_err(dev, "no platform data!\n");
 		return -EINVAL;
 	}
 
-	plat_data = (struct mcf_esdhc_platform_data *)
-			host->mmc->parent->platform_data;
+	plat_data = (struct mcf_esdhc_platform_data *)dev->platform_data;
 
 	/* Card_detect */
 	switch (plat_data->cd_type) {
@@ -489,7 +489,7 @@ err_exit:
 	return err;
 }
 
-static int sdhci_esdhc_mcf_remove(struct platform_device *pdev)
+static void sdhci_esdhc_mcf_remove(struct platform_device *pdev)
 {
 	struct sdhci_host *host = platform_get_drvdata(pdev);
 	struct sdhci_pltfm_host *pltfm_host = sdhci_priv(host);
@@ -502,8 +502,6 @@ static int sdhci_esdhc_mcf_remove(struct platform_device *pdev)
 	clk_disable_unprepare(mcf_data->clk_per);
 
 	sdhci_pltfm_free(pdev);
-
-	return 0;
 }
 
 static struct platform_driver sdhci_esdhc_mcf_driver = {
@@ -512,7 +510,7 @@ static struct platform_driver sdhci_esdhc_mcf_driver = {
 		.probe_type = PROBE_PREFER_ASYNCHRONOUS,
 	},
 	.probe = sdhci_esdhc_mcf_probe,
-	.remove = sdhci_esdhc_mcf_remove,
+	.remove_new = sdhci_esdhc_mcf_remove,
 };
 
 module_platform_driver(sdhci_esdhc_mcf_driver);
