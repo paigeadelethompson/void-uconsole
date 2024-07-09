@@ -123,11 +123,9 @@ static int platram_probe(struct platform_device *pdev)
 	info->pdata = pdata;
 
 	/* get the resource for the memory mapping */
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	info->map.virt = devm_ioremap_resource(&pdev->dev, res);
+	info->map.virt = devm_platform_get_and_ioremap_resource(pdev, 0, &res);
 	if (IS_ERR(info->map.virt)) {
 		err = PTR_ERR(info->map.virt);
-		dev_err(&pdev->dev, "failed to ioremap() region\n");
 		goto exit_free;
 	}
 
@@ -177,8 +175,12 @@ static int platram_probe(struct platform_device *pdev)
 	err = mtd_device_parse_register(info->mtd, pdata->probes, NULL,
 					pdata->partitions,
 					pdata->nr_partitions);
-	if (!err)
-		dev_info(&pdev->dev, "registered mtd device\n");
+	if (err) {
+		dev_err(&pdev->dev, "failed to register mtd device\n");
+		goto exit_free;
+	}
+
+	dev_info(&pdev->dev, "registered mtd device\n");
 
 	if (pdata->nr_partitions) {
 		/* add the whole device. */
@@ -186,10 +188,11 @@ static int platram_probe(struct platform_device *pdev)
 		if (err) {
 			dev_err(&pdev->dev,
 				"failed to register the entire device\n");
+			goto exit_free;
 		}
 	}
 
-	return err;
+	return 0;
 
  exit_free:
 	platram_remove(pdev);

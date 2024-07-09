@@ -9,43 +9,26 @@
 /{
 	compatible = "brcm,bcm2835";
 
-	fragment@0 {
+	i2c_frag: fragment@0 {
 		target = <&i2c_csi_dsi>;
 		__overlay__ {
 			#address-cells = <1>;
 			#size-cells = <0>;
 			status = "okay";
 
-			imx290: imx290@1a {
-				reg = <0x1a>;
-				status = "okay";
-
-				clocks = <&imx290_clk>;
-				clock-names = "xclk";
-				clock-frequency = <37125000>;
-
-				vdda-supply = <&cam1_reg>;	/* 2.8v */
-				vdddo-supply = <&imx290_vdddo>;	/* 1.8v */
-				vddd-supply = <&imx290_vddd>;	/* 1.5v */
-
-				port {
-					imx290_0: endpoint {
-						remote-endpoint = <&csi1_ep>;
-						clock-lanes = <0>;
-					};
-				};
-			};
+			#include "imx290_327.dtsi"
 		};
 	};
 
-	fragment@1 {
+	csi_frag: fragment@1 {
 		target = <&csi1>;
-		__overlay__ {
+		csi: __overlay__ {
 			status = "okay";
+			brcm,media-controller;
 
 			port {
-				csi1_ep: endpoint {
-					remote-endpoint = <&imx290_0>;
+				csi_ep: endpoint {
+					remote-endpoint = <&cam_endpoint>;
 				};
 			};
 		};
@@ -58,27 +41,11 @@
 		};
 	};
 
-	fragment@3 {
-		target-path="/";
-		__overlay__ {
-			imx290_vdddo: fixedregulator@1 {
-				compatible = "regulator-fixed";
-				regulator-name = "imx290_vdddo";
-				regulator-min-microvolt = <1800000>;
-				regulator-max-microvolt = <1800000>;
-			};
-			imx290_vddd: fixedregulator@2 {
-				compatible = "regulator-fixed";
-				regulator-name = "imx290_vddd";
-				regulator-min-microvolt = <1500000>;
-				regulator-max-microvolt = <1500000>;
-			};
-
-			imx290_clk: camera-clk {
-				compatible = "fixed-clock";
-				#clock-cells = <0>;
-				clock-frequency = <37125000>;
-			};
+	clk_frag: fragment@3 {
+		target = <&cam1_clk>;
+		cam_clk: __overlay__ {
+			status = "okay";
+			clock-frequency = <37125000>;
 		};
 	};
 
@@ -89,18 +56,8 @@
 		};
 	};
 
-	fragment@5 {
-		target = <&cam1_reg>;
-		__overlay__ {
-			status = "okay";
-			regulator-name = "imx290_vdda";
-			regulator-min-microvolt = <2800000>;
-			regulator-max-microvolt = <2800000>;
-		};
-	};
-
 	fragment@6 {
-		target = <&imx290_0>;
+		target = <&cam_endpoint>;
 		__overlay__ {
 			data-lanes = <1 2>;
 			link-frequencies =
@@ -109,7 +66,7 @@
 	};
 
 	fragment@7 {
-		target = <&imx290_0>;
+		target = <&cam_endpoint>;
 		__dormant__ {
 			data-lanes = <1 2 3 4>;
 			link-frequencies =
@@ -118,14 +75,14 @@
 	};
 
 	fragment@8 {
-		target = <&csi1_ep>;
+		target = <&csi_ep>;
 		__overlay__ {
 			data-lanes = <1 2>;
 		};
 	};
 
 	fragment@9 {
-		target = <&csi1_ep>;
+		target = <&csi_ep>;
 		__dormant__ {
 			data-lanes = <1 2 3 4>;
 		};
@@ -133,7 +90,23 @@
 
 	__overrides__ {
 		4lane = <0>, "-6+7-8+9";
-		clock-frequency = <&imx290_clk>,"clock-frequency:0",
-				  <&imx290>,"clock-frequency:0";
+		clock-frequency = <&cam_clk>,"clock-frequency:0",
+				  <&cam_node>,"clock-frequency:0";
+		rotation = <&cam_node>,"rotation:0";
+		orientation = <&cam_node>,"orientation:0";
+		media-controller = <&csi>,"brcm,media-controller?";
+		cam0 = <&i2c_frag>, "target:0=",<&i2c_csi_dsi0>,
+		       <&csi_frag>, "target:0=",<&csi0>,
+		       <&clk_frag>, "target:0=",<&cam0_clk>,
+		       <&cam_node>, "clocks:0=",<&cam0_clk>,
+		       <&cam_node>, "vdda-supply:0=",<&cam0_reg>;
 	};
+};
+
+&cam_node {
+	status = "okay";
+};
+
+&cam_endpoint {
+	remote-endpoint = <&csi_ep>;
 };

@@ -26,13 +26,21 @@
 #include "bcm2835-isp-ctrls.h"
 #include "bcm2835-isp-fmts.h"
 
+/*
+ * We want to instantiate 2 independent instances allowing 2 simultaneous users
+ * of the ISP hardware.
+ */
+#define BCM2835_ISP_NUM_INSTANCES 2
+
+MODULE_IMPORT_NS(DMA_BUF);
+
 static unsigned int debug;
 module_param(debug, uint, 0644);
 MODULE_PARM_DESC(debug, "activates debug info");
 
-static unsigned int video_nr = 13;
-module_param(video_nr, uint, 0644);
-MODULE_PARM_DESC(video_nr, "base video device number");
+static unsigned int video_nr[BCM2835_ISP_NUM_INSTANCES] = { 13, 20 };
+module_param_array(video_nr, uint, NULL, 0644);
+MODULE_PARM_DESC(video_nr, "base video device numbers");
 
 #define BCM2835_ISP_NAME "bcm2835-isp"
 #define BCM2835_ISP_ENTITY_NAME_LEN 32
@@ -192,9 +200,9 @@ static int set_wb_gains(struct bcm2835_isp_node *node)
 
 static int set_digital_gain(struct bcm2835_isp_node *node, uint32_t gain)
 {
-	struct mmal_parameter_rational digital_gain = {
-		.num = gain,
-		.den = 1000
+	struct s32_fract digital_gain = {
+		.numerator = gain,
+		.denominator = 1000
 	};
 
 	return set_isp_param(node, MMAL_PARAMETER_DIGITAL_GAIN,
@@ -616,7 +624,6 @@ static void bcm2835_isp_node_stop_streaming(struct vb2_queue *q)
 {
 	struct bcm2835_isp_node *node = vb2_get_drv_priv(q);
 	struct bcm2835_isp_dev *dev = node_get_dev(node);
-	unsigned int i;
 	int ret;
 
 	v4l2_dbg(1, debug, &dev->v4l2_dev, "%s: node %s[%d], mmal port %p\n",
@@ -647,17 +654,22 @@ static void bcm2835_isp_node_stop_streaming(struct vb2_queue *q)
 		}
 	}
 
-	/* Release the VCSM handle here to release the associated dmabuf */
-	for (i = 0; i < q->num_buffers; i++) {
-		struct vb2_v4l2_buffer *vb2 = to_vb2_v4l2_buffer(q->bufs[i]);
-		struct bcm2835_isp_buffer *buf =
-			container_of(vb2, struct bcm2835_isp_buffer, vb);
-		bcm2835_isp_mmal_buf_cleanup(&buf->mmal);
-	}
-
 	atomic_dec(&dev->num_streaming);
 	/* If all ports disabled, then disable the component */
 	if (atomic_read(&dev->num_streaming) == 0) {
+		struct bcm2835_isp_lens_shading ls;
+		/*
+		 * The ISP component on the firmware has a reference to the
+		 * dmabuf handle for the lens shading table.  Pass a null handle
+		 * to remove that reference now.
+		 */
+		memset(&ls, 0, sizeof(ls));
+		/* Must set a valid grid size for the FW */
+		ls.grid_cell_size = 16;
+		set_isp_param(&dev->node[0],
+			      MMAL_PARAMETER_LENS_SHADING_OVERRIDE,
+			      &ls, sizeof(ls));
+
 		ret = vchiq_mmal_component_disable(dev->mmal_instance,
 						   dev->component);
 		if (ret) {
@@ -1032,12 +1044,16 @@ static int bcm2835_isp_node_try_fmt(struct file *file, void *priv,
 		/* In all cases, we only support the defaults for these: */
 		f->fmt.pix.ycbcr_enc = V4L2_MAP_YCBCR_ENC_DEFAULT(f->fmt.pix.colorspace);
 		f->fmt.pix.xfer_func = V4L2_MAP_XFER_FUNC_DEFAULT(f->fmt.pix.colorspace);
-		is_rgb = f->fmt.pix.colorspace == V4L2_COLORSPACE_SRGB;
+		/* RAW counts as sRGB here so that we get full range. */
+		is_rgb = f->fmt.pix.colorspace == V4L2_COLORSPACE_SRGB ||
+			f->fmt.pix.colorspace == V4L2_COLORSPACE_RAW;
 		f->fmt.pix.quantization = V4L2_MAP_QUANTIZATION_DEFAULT(is_rgb, f->fmt.pix.colorspace,
 									f->fmt.pix.ycbcr_enc);
 
-		f->fmt.pix.bytesperline = get_bytesperline(f->fmt.pix.width,
-							   fmt);
+		/* Respect any stride value (suitably aligned) that was requested. */
+		f->fmt.pix.bytesperline = max(get_bytesperline(f->fmt.pix.width, fmt),
+					      ALIGN(f->fmt.pix.bytesperline,
+						    fmt->bytesperline_align));
 		f->fmt.pix.field = V4L2_FIELD_NONE;
 		f->fmt.pix.sizeimage =
 			get_sizeimage(f->fmt.pix.bytesperline, f->fmt.pix.width,
@@ -1235,7 +1251,7 @@ static int bcm2835_isp_get_supported_fmts(struct bcm2835_isp_node *node)
 	if (ret) {
 		if (ret == MMAL_MSG_STATUS_ENOSPC) {
 			v4l2_err(&dev->v4l2_dev,
-				 "%s: port has more encodings than we provided space for. Some are dropped (%u vs %u).\n",
+				 "%s: port has more encodings than we provided space for. Some are dropped (%zu vs %u).\n",
 				 __func__, param_size / sizeof(u32),
 				 MAX_SUPPORTED_ENCODINGS);
 			num_encodings = MAX_SUPPORTED_ENCODINGS;
@@ -1277,6 +1293,7 @@ static int bcm2835_isp_get_supported_fmts(struct bcm2835_isp_node *node)
  * or output nodes.
  */
 static int register_node(struct bcm2835_isp_dev *dev,
+			 unsigned int instance,
 			 struct bcm2835_isp_node *node,
 			 int index)
 {
@@ -1285,6 +1302,7 @@ static int register_node(struct bcm2835_isp_dev *dev,
 	int ret;
 
 	mutex_init(&node->lock);
+	mutex_init(&node->queue_lock);
 
 	node->dev = dev;
 	vfd = &node->vfd;
@@ -1437,7 +1455,7 @@ static int register_node(struct bcm2835_isp_dev *dev,
 	snprintf(vfd->name, sizeof(node->vfd.name), "%s-%s%d", BCM2835_ISP_NAME,
 		 node->name, node->id);
 
-	ret = video_register_device(vfd, VFL_TYPE_VIDEO, video_nr + index);
+	ret = video_register_device(vfd, VFL_TYPE_VIDEO, video_nr[instance]);
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev,
 			 "Failed to register video %s[%d] device node\n",
@@ -1463,7 +1481,7 @@ queue_cleanup:
 }
 
 /* Unregister one of the /dev/video<N> nodes associated with the ISP. */
-static void unregister_node(struct bcm2835_isp_node *node)
+static void bcm2835_unregister_node(struct bcm2835_isp_node *node)
 {
 	struct bcm2835_isp_dev *dev = node_get_dev(node);
 
@@ -1658,15 +1676,14 @@ done:
 	return ret;
 }
 
-static int bcm2835_isp_remove(struct platform_device *pdev)
+static void bcm2835_isp_remove_instance(struct bcm2835_isp_dev *dev)
 {
-	struct bcm2835_isp_dev *dev = platform_get_drvdata(pdev);
 	unsigned int i;
 
 	media_controller_unregister(dev);
 
 	for (i = 0; i < BCM2835_ISP_NUM_NODES; i++)
-		unregister_node(&dev->node[i]);
+		bcm2835_unregister_node(&dev->node[i]);
 
 	v4l2_device_unregister(&dev->v4l2_dev);
 
@@ -1675,11 +1692,11 @@ static int bcm2835_isp_remove(struct platform_device *pdev)
 					      dev->component);
 
 	vchiq_mmal_finalise(dev->mmal_instance);
-
-	return 0;
 }
 
-static int bcm2835_isp_probe(struct platform_device *pdev)
+static int bcm2835_isp_probe_instance(struct platform_device *pdev,
+				      struct bcm2835_isp_dev **dev_int,
+				      unsigned int instance)
 {
 	struct bcm2835_isp_dev *dev;
 	unsigned int i;
@@ -1689,6 +1706,7 @@ static int bcm2835_isp_probe(struct platform_device *pdev)
 	if (!dev)
 		return -ENOMEM;
 
+	*dev_int = dev;
 	dev->dev = &pdev->dev;
 
 	ret = v4l2_device_register(&pdev->dev, &dev->v4l2_dev);
@@ -1706,7 +1724,7 @@ static int bcm2835_isp_probe(struct platform_device *pdev)
 	if (ret) {
 		v4l2_err(&dev->v4l2_dev,
 			 "%s: failed to create ril.isp component\n", __func__);
-		goto error;
+		return ret;
 	}
 
 	if (dev->component->inputs < BCM2835_ISP_NUM_OUTPUTS ||
@@ -1718,7 +1736,7 @@ static int bcm2835_isp_probe(struct platform_device *pdev)
 			  BCM2835_ISP_NUM_OUTPUTS,
 			  dev->component->outputs,
 			  BCM2835_ISP_NUM_CAPTURES + BCM2835_ISP_NUM_METADATA);
-		goto error;
+		return -EINVAL;
 	}
 
 	atomic_set(&dev->num_streaming, 0);
@@ -1726,17 +1744,55 @@ static int bcm2835_isp_probe(struct platform_device *pdev)
 	for (i = 0; i < BCM2835_ISP_NUM_NODES; i++) {
 		struct bcm2835_isp_node *node = &dev->node[i];
 
-		ret = register_node(dev, node, i);
+		ret = register_node(dev, instance, node, i);
 		if (ret)
-			goto error;
+			return ret;
 	}
 
 	ret = media_controller_register(dev);
 	if (ret)
-		goto error;
+		return ret;
 
-	platform_set_drvdata(pdev, dev);
-	v4l2_info(&dev->v4l2_dev, "Loaded V4L2 %s\n", BCM2835_ISP_NAME);
+	return 0;
+}
+
+static int bcm2835_isp_remove(struct platform_device *pdev)
+{
+	struct bcm2835_isp_dev **bcm2835_isp_instances;
+	unsigned int i;
+
+	bcm2835_isp_instances = platform_get_drvdata(pdev);
+	for (i = 0; i < BCM2835_ISP_NUM_INSTANCES; i++) {
+		if (bcm2835_isp_instances[i])
+			bcm2835_isp_remove_instance(bcm2835_isp_instances[i]);
+	}
+
+	return 0;
+}
+
+static int bcm2835_isp_probe(struct platform_device *pdev)
+{
+	struct bcm2835_isp_dev **bcm2835_isp_instances;
+	unsigned int i;
+	int ret;
+
+	bcm2835_isp_instances = devm_kzalloc(&pdev->dev,
+					     sizeof(bcm2835_isp_instances) *
+						      BCM2835_ISP_NUM_INSTANCES,
+					     GFP_KERNEL);
+	if (!bcm2835_isp_instances)
+		return -ENOMEM;
+
+	platform_set_drvdata(pdev, bcm2835_isp_instances);
+
+	for (i = 0; i < BCM2835_ISP_NUM_INSTANCES; i++) {
+		ret = bcm2835_isp_probe_instance(pdev,
+						 &bcm2835_isp_instances[i], i);
+		if (ret)
+			goto error;
+	}
+
+	dev_info(&pdev->dev, "Loaded V4L2 %s\n", BCM2835_ISP_NAME);
 	return 0;
 
 error:

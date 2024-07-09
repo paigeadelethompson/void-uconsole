@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-1.0+
 /* A Linux device driver for PCI NE2000 clones.
  *
  * Authors and other copyright holders:
@@ -390,7 +391,7 @@ static int ne2k_pci_init_one(struct pci_dev *pdev,
 	dev->ethtool_ops = &ne2k_pci_ethtool_ops;
 	NS8390_init(dev, 0);
 
-	memcpy(dev->dev_addr, SA_prom, dev->addr_len);
+	eth_hw_addr_set(dev, SA_prom);
 
 	i = register_netdev(dev);
 	if (i)
@@ -610,7 +611,7 @@ static void ne2k_pci_block_output(struct net_device *dev, int count,
 	/* We should already be in page 0, but to be safe... */
 	outb(E8390_PAGE0+E8390_START+E8390_NODMA, nic_base + NE_CMD);
 
-#ifdef NE8390_RW_BUGFIX
+#ifdef NE_RW_BUGFIX
 	/* Handle the read-before-write bug the same way as the
 	 * Crynwr packet driver -- the NatSemi method doesn't work.
 	 * Actually this doesn't always work either, but if you have
@@ -730,18 +731,4 @@ static struct pci_driver ne2k_driver = {
 	.id_table	= ne2k_pci_tbl,
 	.driver.pm	= &ne2k_pci_pm_ops,
 };
-
-
-static int __init ne2k_pci_init(void)
-{
-	return pci_register_driver(&ne2k_driver);
-}
-
-
-static void __exit ne2k_pci_cleanup(void)
-{
-	pci_unregister_driver(&ne2k_driver);
-}
-
-module_init(ne2k_pci_init);
-module_exit(ne2k_pci_cleanup);
+module_pci_driver(ne2k_driver);

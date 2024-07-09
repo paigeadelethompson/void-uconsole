@@ -10,7 +10,6 @@
 #include <linux/kernel.h>
 #include <linux/compiler.h>
 #include <linux/string.h>
-#include <linux/version.h>
 #include <linux/pci.h>
 #include <linux/delay.h>
 #include <scsi/scsi_transport.h>
@@ -59,6 +58,8 @@ extern uint qedf_debug;
 						*/
 #define QEDF_LOG_NOTICE	0x40000000	/* Notice logs */
 #define QEDF_LOG_WARN		0x80000000	/* Warning logs */
+
+#define QEDF_DEBUGFS_LOG_LEN (2 * PAGE_SIZE)
 
 /* Debug context structure */
 struct qedf_dbg_ctx {

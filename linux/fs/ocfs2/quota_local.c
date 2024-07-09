@@ -811,7 +811,7 @@ static int ocfs2_local_free_info(struct super_block *sb, int type)
 	struct ocfs2_quota_chunk *chunk;
 	struct ocfs2_local_disk_chunk *dchunk;
 	int mark_clean = 1, len;
-	int status;
+	int status = 0;
 
 	iput(oinfo->dqi_gqinode);
 	ocfs2_simple_drop_lockres(OCFS2_SB(sb), &oinfo->dqi_gqlock);
@@ -853,17 +853,14 @@ static int ocfs2_local_free_info(struct super_block *sb, int type)
 				 oinfo->dqi_libh,
 				 olq_update_info,
 				 info);
-	if (status < 0) {
+	if (status < 0)
 		mlog_errno(status);
-		goto out;
-	}
-
 out:
 	ocfs2_inode_unlock(sb_dqopt(sb)->files[type], 1);
 	brelse(oinfo->dqi_libh);
 	brelse(oinfo->dqi_lqi_bh);
 	kfree(oinfo);
-	return 0;
+	return status;
 }
 
 static void olq_set_dquot(struct buffer_head *bh, void *private)
@@ -921,19 +918,19 @@ static struct ocfs2_quota_chunk *ocfs2_find_free_entry(struct super_block *sb,
 {
 	struct mem_dqinfo *info = sb_dqinfo(sb, type);
 	struct ocfs2_mem_dqinfo *oinfo = info->dqi_priv;
-	struct ocfs2_quota_chunk *chunk;
+	struct ocfs2_quota_chunk *chunk = NULL, *iter;
 	struct ocfs2_local_disk_chunk *dchunk;
 	int found = 0, len;
 
-	list_for_each_entry(chunk, &oinfo->dqi_chunk, qc_chunk) {
+	list_for_each_entry(iter, &oinfo->dqi_chunk, qc_chunk) {
 		dchunk = (struct ocfs2_local_disk_chunk *)
-						chunk->qc_headerbh->b_data;
+						iter->qc_headerbh->b_data;
 		if (le32_to_cpu(dchunk->dqc_free) > 0) {
-			found = 1;
+			chunk = iter;
 			break;
 		}
 	}
-	if (!found)
+	if (!chunk)
 		return NULL;
 
 	if (chunk->qc_num < oinfo->dqi_chunks - 1) {

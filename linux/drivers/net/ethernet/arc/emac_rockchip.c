@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
-/**
+/*
  * emac-rockchip.c - Rockchip EMAC specific glue layer
  *
  * Copyright (C) 2014 Romain Perier <romain.perier@gmail.com>
@@ -248,9 +248,8 @@ static int emac_rockchip_remove(struct platform_device *pdev)
 {
 	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct rockchip_priv_data *priv = netdev_priv(ndev);
-	int err;
 
-	err = arc_emac_remove(ndev);
+	arc_emac_remove(ndev);
 
 	clk_disable_unprepare(priv->refclk);
 
@@ -261,7 +260,7 @@ static int emac_rockchip_remove(struct platform_device *pdev)
 		clk_disable_unprepare(priv->macclk);
 
 	free_netdev(ndev);
-	return err;
+	return 0;
 }
 
 static struct platform_driver emac_rockchip_driver = {

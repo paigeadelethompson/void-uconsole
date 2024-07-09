@@ -45,8 +45,11 @@
 #define _ASM_S390_FPU_API_H
 
 #include <linux/preempt.h>
+#include <asm/asm-extable.h>
 
 void save_fpu_regs(void);
+void load_fpu_regs(void);
+void __load_fpu_regs(void);
 
 static inline int test_fp_ctl(u32 fpc)
 {
@@ -76,7 +79,7 @@ static inline int test_fp_ctl(u32 fpc)
 #define KERNEL_VXR_HIGH		(KERNEL_VXR_V16V23|KERNEL_VXR_V24V31)
 
 #define KERNEL_VXR		(KERNEL_VXR_LOW|KERNEL_VXR_HIGH)
-#define KERNEL_FPR		(KERNEL_FPC|KERNEL_VXR_V0V7)
+#define KERNEL_FPR		(KERNEL_FPC|KERNEL_VXR_LOW)
 
 struct kernel_fpu;
 

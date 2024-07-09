@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #ifndef _dcn_3_0_0_OFFSET_HEADER
 #define _dcn_3_0_0_OFFSET_HEADER
 
@@ -8922,7 +8923,7 @@
 #define mmOTG1_OTG_CONTROL                                                                             0x1bc1
 #define mmOTG1_OTG_CONTROL_BASE_IDX                                                                    2
 #define mmOTG1_OTG_BLANK_CONTROL                                                                       0x1bc2
-#define mmOTG1_OTG_BLANK_CONTROL_BASE_IDX
+#define mmOTG1_OTG_BLANK_CONTROL_BASE_IDX                                                              2
 #define mmOTG1_OTG_INTERLACE_CONTROL                                                                   0x1bc4
 #define mmOTG1_OTG_INTERLACE_CONTROL_BASE_IDX                                                          2
 #define mmOTG1_OTG_INTERLACE_STATUS                                                                    0x1bc5
@@ -15803,6 +15804,11 @@
 #define mmDME6_DME_CONTROL_BASE_IDX                                                                    3
 #define mmDME6_DME_MEMORY_CONTROL                                                                      0x093d
 #define mmDME6_DME_MEMORY_CONTROL_BASE_IDX                                                             3
+
+// addressBlock: dce_dc_hpo_hpo_top_dispdec
+// base address: 0x0
+#define mmHPO_TOP_CLOCK_CONTROL                                                                        0x0e43
+#define mmHPO_TOP_CLOCK_CONTROL_BASE_IDX                                                               3
 
 // base address: 0x1a698
 #define mmDC_PERFMON29_PERFCOUNTER_CNTL                                                                0x0e66

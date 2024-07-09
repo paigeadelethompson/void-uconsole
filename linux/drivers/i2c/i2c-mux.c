@@ -243,9 +243,10 @@ struct i2c_mux_core *i2c_mux_alloc(struct i2c_adapter *parent,
 				   int (*deselect)(struct i2c_mux_core *, u32))
 {
 	struct i2c_mux_core *muxc;
+	size_t mux_size;
 
-	muxc = devm_kzalloc(dev, struct_size(muxc, adapter, max_adapters)
-			    + sizeof_priv, GFP_KERNEL);
+	mux_size = struct_size(muxc, adapter, max_adapters);
+	muxc = devm_kzalloc(dev, size_add(mux_size, sizeof_priv), GFP_KERNEL);
 	if (!muxc)
 		return NULL;
 	if (sizeof_priv)
@@ -340,7 +341,7 @@ int i2c_mux_add_adapter(struct i2c_mux_core *muxc,
 		priv->adap.lock_ops = &i2c_parent_lock_ops;
 
 	/* Sanity check on class */
-	if (i2c_mux_parent_classes(parent) & class)
+	if (i2c_mux_parent_classes(parent) & class & ~I2C_CLASS_DEPRECATED)
 		dev_err(&parent->dev,
 			"Segment %d behind mux can't share classes with ancestors\n",
 			chan_id);
@@ -354,7 +355,12 @@ int i2c_mux_add_adapter(struct i2c_mux_core *muxc,
 	if (muxc->dev->of_node) {
 		struct device_node *dev_node = muxc->dev->of_node;
 		struct device_node *mux_node, *child = NULL;
+		u32 base_nr = 0;
 		u32 reg;
+
+		of_property_read_u32(dev_node, "base-nr", &base_nr);
+		if (!force_nr && base_nr)
+			force_nr = base_nr + chan_id;
 
 		if (muxc->arbitrator)
 			mux_node = of_get_child_by_name(dev_node, "i2c-arb");

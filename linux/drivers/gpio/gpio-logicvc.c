@@ -8,7 +8,6 @@
 #include <linux/gpio/driver.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_address.h>
 #include <linux/platform_device.h>
 #include <linux/regmap.h>
@@ -114,10 +113,8 @@ static int logicvc_gpio_probe(struct platform_device *pdev)
 		}
 
 		base = devm_ioremap_resource(dev, &res);
-		if (IS_ERR(base)) {
-			dev_err(dev, "Failed to map I/O base\n");
+		if (IS_ERR(base))
 			return PTR_ERR(base);
-		}
 
 		logicvc_gpio_regmap_config.max_register = resource_size(&res) -
 			logicvc_gpio_regmap_config.reg_stride;
@@ -140,8 +137,6 @@ static int logicvc_gpio_probe(struct platform_device *pdev)
 	logicvc->chip.get = logicvc_gpio_get;
 	logicvc->chip.set = logicvc_gpio_set;
 	logicvc->chip.direction_output = logicvc_gpio_direction_output;
-
-	platform_set_drvdata(pdev, logicvc);
 
 	return devm_gpiochip_add_data(dev, &logicvc->chip, logicvc);
 }

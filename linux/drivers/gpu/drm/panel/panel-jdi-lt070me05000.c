@@ -205,11 +205,11 @@ static int jdi_panel_unprepare(struct drm_panel *panel)
 	if (ret < 0)
 		dev_err(dev, "regulator disable failed, %d\n", ret);
 
-	gpiod_set_value(jdi->enable_gpio, 0);
+	gpiod_set_value_cansleep(jdi->enable_gpio, 0);
 
-	gpiod_set_value(jdi->reset_gpio, 1);
+	gpiod_set_value_cansleep(jdi->reset_gpio, 1);
 
-	gpiod_set_value(jdi->dcdc_en_gpio, 0);
+	gpiod_set_value_cansleep(jdi->dcdc_en_gpio, 0);
 
 	jdi->prepared = false;
 
@@ -233,13 +233,13 @@ static int jdi_panel_prepare(struct drm_panel *panel)
 
 	msleep(20);
 
-	gpiod_set_value(jdi->dcdc_en_gpio, 1);
+	gpiod_set_value_cansleep(jdi->dcdc_en_gpio, 1);
 	usleep_range(10, 20);
 
-	gpiod_set_value(jdi->reset_gpio, 0);
+	gpiod_set_value_cansleep(jdi->reset_gpio, 0);
 	usleep_range(10, 20);
 
-	gpiod_set_value(jdi->enable_gpio, 1);
+	gpiod_set_value_cansleep(jdi->enable_gpio, 1);
 	usleep_range(10, 20);
 
 	ret = jdi_panel_init(jdi);
@@ -263,11 +263,11 @@ poweroff:
 	if (ret < 0)
 		dev_err(dev, "regulator disable failed, %d\n", ret);
 
-	gpiod_set_value(jdi->enable_gpio, 0);
+	gpiod_set_value_cansleep(jdi->enable_gpio, 0);
 
-	gpiod_set_value(jdi->reset_gpio, 1);
+	gpiod_set_value_cansleep(jdi->reset_gpio, 1);
 
-	gpiod_set_value(jdi->dcdc_en_gpio, 0);
+	gpiod_set_value_cansleep(jdi->dcdc_en_gpio, 0);
 
 	return ret;
 }
@@ -404,39 +404,32 @@ static int jdi_panel_add(struct jdi_panel *jdi)
 
 	ret = devm_regulator_bulk_get(dev, ARRAY_SIZE(jdi->supplies),
 				      jdi->supplies);
-	if (ret < 0) {
-		dev_err(dev, "failed to init regulator, ret=%d\n", ret);
-		return ret;
-	}
+	if (ret < 0)
+		return dev_err_probe(dev, ret,
+				     "failed to init regulator, ret=%d\n", ret);
 
 	jdi->enable_gpio = devm_gpiod_get(dev, "enable", GPIOD_OUT_LOW);
 	if (IS_ERR(jdi->enable_gpio)) {
-		ret = PTR_ERR(jdi->enable_gpio);
-		dev_err(dev, "cannot get enable-gpio %d\n", ret);
-		return ret;
+		return dev_err_probe(dev, PTR_ERR(jdi->enable_gpio),
+				     "cannot get enable-gpio %d\n", ret);
 	}
 
 	jdi->reset_gpio = devm_gpiod_get(dev, "reset", GPIOD_OUT_HIGH);
-	if (IS_ERR(jdi->reset_gpio)) {
-		ret = PTR_ERR(jdi->reset_gpio);
-		dev_err(dev, "cannot get reset-gpios %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(jdi->reset_gpio))
+		return dev_err_probe(dev, PTR_ERR(jdi->reset_gpio),
+				     "cannot get reset-gpios %d\n", ret);
 
 	jdi->dcdc_en_gpio = devm_gpiod_get(dev, "dcdc-en", GPIOD_OUT_LOW);
-	if (IS_ERR(jdi->dcdc_en_gpio)) {
-		ret = PTR_ERR(jdi->dcdc_en_gpio);
-		dev_err(dev, "cannot get dcdc-en-gpio %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(jdi->dcdc_en_gpio))
+		return dev_err_probe(dev, PTR_ERR(jdi->dcdc_en_gpio),
+				     "cannot get dcdc-en-gpio %d\n", ret);
 
 	jdi->backlight = drm_panel_create_dsi_backlight(jdi->dsi);
-	if (IS_ERR(jdi->backlight)) {
-		ret = PTR_ERR(jdi->backlight);
-		dev_err(dev, "failed to register backlight %d\n", ret);
-		return ret;
-	}
+	if (IS_ERR(jdi->backlight))
+		return dev_err_probe(dev, PTR_ERR(jdi->backlight),
+				     "failed to register backlight %d\n", ret);
 
+	jdi->base.prepare_prev_first = true;
 	drm_panel_init(&jdi->base, &jdi->dsi->dev, &jdi_panel_funcs,
 		       DRM_MODE_CONNECTOR_DSI);
 
@@ -473,10 +466,16 @@ static int jdi_panel_probe(struct mipi_dsi_device *dsi)
 	if (ret < 0)
 		return ret;
 
-	return mipi_dsi_attach(dsi);
+	ret = mipi_dsi_attach(dsi);
+	if (ret < 0) {
+		jdi_panel_del(jdi);
+		return ret;
+	}
+
+	return 0;
 }
 
-static int jdi_panel_remove(struct mipi_dsi_device *dsi)
+static void jdi_panel_remove(struct mipi_dsi_device *dsi)
 {
 	struct jdi_panel *jdi = mipi_dsi_get_drvdata(dsi);
 	int ret;
@@ -491,8 +490,6 @@ static int jdi_panel_remove(struct mipi_dsi_device *dsi)
 			ret);
 
 	jdi_panel_del(jdi);
-
-	return 0;
 }
 
 static void jdi_panel_shutdown(struct mipi_dsi_device *dsi)

@@ -106,7 +106,7 @@ This has a number of options available:
      certificate and a private key.
 
      If the PEM file containing the private key is encrypted, or if the
-     PKCS#11 token requries a PIN, this can be provided at build time by
+     PKCS#11 token requires a PIN, this can be provided at build time by
      means of the ``KBUILD_SIGN_PIN`` variable.
 
 
@@ -266,7 +266,7 @@ for which it has a public key.   Otherwise, it will also load modules that are
 unsigned.   Any module for which the kernel has a key, but which proves to have
 a signature mismatch will not be permitted to load.
 
-Any module that has an unparseable signature will be rejected.
+Any module that has an unparsable signature will be rejected.
 
 
 =========================================

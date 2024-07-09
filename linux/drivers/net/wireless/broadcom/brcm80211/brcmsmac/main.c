@@ -704,7 +704,7 @@ static void brcms_c_write_inits(struct brcms_hardware *wlc_hw,
 static void brcms_c_write_mhf(struct brcms_hardware *wlc_hw, u16 *mhfs)
 {
 	u8 idx;
-	u16 addr[] = {
+	static const u16 addr[] = {
 		M_HOST_FLAGS1, M_HOST_FLAGS2, M_HOST_FLAGS3, M_HOST_FLAGS4,
 		M_HOST_FLAGS5
 	};
@@ -3147,10 +3147,8 @@ void brcms_c_init_scb(struct scb *scb)
 	scb->flags = SCB_WMECAP | SCB_HTCAP;
 	for (i = 0; i < NUMPRIO; i++) {
 		scb->seqnum[i] = 0;
-		scb->seqctl[i] = 0xFFFF;
 	}
 
-	scb->seqctl_nonqos = 0xFFFF;
 	scb->magic = SCB_MAGIC;
 }
 
@@ -3800,7 +3798,7 @@ static void brcms_b_set_shortslot(struct brcms_hardware *wlc_hw, bool shortslot)
 }
 
 /*
- * Suspend the the MAC and update the slot timing
+ * Suspend the MAC and update the slot timing
  * for standard 11b/g (20us slots) or shortslot 11g (9us slots).
  */
 static void brcms_c_switch_shortslot(struct brcms_c_info *wlc, bool shortslot)
@@ -6607,7 +6605,8 @@ brcms_c_d11hdrs_mac80211(struct brcms_c_info *wlc, struct ieee80211_hw *hw,
 			rts->frame_control = cpu_to_le16(IEEE80211_FTYPE_CTL |
 							 IEEE80211_STYPE_RTS);
 
-			memcpy(&rts->ra, &h->addr1, 2 * ETH_ALEN);
+			memcpy(&rts->ra, &h->addr1, ETH_ALEN);
+			memcpy(&rts->ta, &h->addr2, ETH_ALEN);
 		}
 
 		/* mainrate

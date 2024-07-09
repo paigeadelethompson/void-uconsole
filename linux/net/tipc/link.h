@@ -148,12 +148,11 @@ int tipc_link_bc_ack_rcv(struct tipc_link *l, u16 acked, u16 gap,
 			 struct tipc_gap_ack_blks *ga,
 			 struct sk_buff_head *xmitq,
 			 struct sk_buff_head *retrq);
-void tipc_link_build_bc_sync_msg(struct tipc_link *l,
-				 struct sk_buff_head *xmitq);
 void tipc_link_bc_init_rcv(struct tipc_link *l, struct tipc_msg *hdr);
 int tipc_link_bc_sync_rcv(struct tipc_link *l,   struct tipc_msg *hdr,
 			  struct sk_buff_head *xmitq);
 int tipc_link_bc_nack_rcv(struct tipc_link *l, struct sk_buff *skb,
 			  struct sk_buff_head *xmitq);
 bool tipc_link_too_silent(struct tipc_link *l);
+struct net *tipc_link_net(struct tipc_link *l);
 #endif

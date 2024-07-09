@@ -13,8 +13,7 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
-#include <linux/of_platform.h>
-#include <linux/of_device.h>
+#include <linux/of.h>
 #include <linux/phy/phy.h>
 #include <linux/platform_device.h>
 #include <linux/reset.h>
@@ -95,7 +94,6 @@ MODULE_DEVICE_TABLE(of, ipq4019_usb_phy_of_match);
 static int ipq4019_usb_phy_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
-	struct resource *res;
 	struct phy_provider *phy_provider;
 	struct ipq4019_usb_phy *phy;
 
@@ -104,8 +102,7 @@ static int ipq4019_usb_phy_probe(struct platform_device *pdev)
 		return -ENOMEM;
 
 	phy->dev = &pdev->dev;
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	phy->base = devm_ioremap_resource(&pdev->dev, res);
+	phy->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(phy->base)) {
 		dev_err(dev, "failed to remap register memory\n");
 		return PTR_ERR(phy->base);

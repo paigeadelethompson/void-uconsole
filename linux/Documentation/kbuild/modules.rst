@@ -128,7 +128,7 @@ executed to make module versioning work.
 
 	modules_install
 		Install the external module(s). The default location is
-		/lib/modules/<kernel_release>/extra/, but a prefix may
+		/lib/modules/<kernel_release>/updates/, but a prefix may
 		be added with INSTALL_MOD_PATH (discussed in section 5).
 
 	clean
@@ -332,7 +332,7 @@ according to the following rule:
 	      There are two notable exceptions to this rule: larger
 	      subsystems have their own directory under include/, such as
 	      include/scsi; and architecture specific headers are located
-	      under arch/$(ARCH)/include/.
+	      under arch/$(SRCARCH)/include/.
 
 4.1 Kernel Includes
 -------------------
@@ -417,7 +417,7 @@ directory:
 
 And external modules are installed in:
 
-	/lib/modules/$(KERNELRELEASE)/extra/
+	/lib/modules/$(KERNELRELEASE)/updates/
 
 5.1 INSTALL_MOD_PATH
 --------------------
@@ -438,10 +438,10 @@ And external modules are installed in:
 -------------------
 
 	External modules are by default installed to a directory under
-	/lib/modules/$(KERNELRELEASE)/extra/, but you may wish to
+	/lib/modules/$(KERNELRELEASE)/updates/, but you may wish to
 	locate modules for a specific functionality in a separate
 	directory. For this purpose, use INSTALL_MOD_DIR to specify an
-	alternative name to "extra."::
+	alternative name to "updates."::
 
 		$ make INSTALL_MOD_DIR=gandalf -C $KDIR \
 		       M=$PWD modules_install

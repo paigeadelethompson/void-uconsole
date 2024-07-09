@@ -33,6 +33,7 @@
 #include "ppsmc.h"
 #include "amd_acpi.h"
 #include "pp_psm.h"
+#include "vega10_hwmgr.h"
 
 extern const struct pp_smumgr_func ci_smu_funcs;
 extern const struct pp_smumgr_func smu8_smu_funcs;
@@ -46,11 +47,6 @@ extern const struct pp_smumgr_func vega12_smu_funcs;
 extern const struct pp_smumgr_func smu10_smu_funcs;
 extern const struct pp_smumgr_func vega20_smu_funcs;
 
-extern int smu7_init_function_pointers(struct pp_hwmgr *hwmgr);
-extern int smu8_init_function_pointers(struct pp_hwmgr *hwmgr);
-extern int vega10_hwmgr_init(struct pp_hwmgr *hwmgr);
-extern int vega12_hwmgr_init(struct pp_hwmgr *hwmgr);
-extern int vega20_hwmgr_init(struct pp_hwmgr *hwmgr);
 extern int smu10_init_function_pointers(struct pp_hwmgr *hwmgr);
 
 static int polaris_set_asic_special_caps(struct pp_hwmgr *hwmgr);
@@ -124,7 +120,7 @@ int hwmgr_early_init(struct pp_hwmgr *hwmgr)
 		case CHIP_TOPAZ:
 			hwmgr->smumgr_funcs = &iceland_smu_funcs;
 			topaz_set_asic_special_caps(hwmgr);
-			hwmgr->feature_mask &= ~ (PP_VBI_TIME_SUPPORT_MASK |
+			hwmgr->feature_mask &= ~(PP_VBI_TIME_SUPPORT_MASK |
 						PP_ENABLE_GFX_CG_THRU_SMU);
 			hwmgr->pp_table_version = PP_TABLE_V0;
 			hwmgr->od_enabled = false;
@@ -137,7 +133,7 @@ int hwmgr_early_init(struct pp_hwmgr *hwmgr)
 		case CHIP_FIJI:
 			hwmgr->smumgr_funcs = &fiji_smu_funcs;
 			fiji_set_asic_special_caps(hwmgr);
-			hwmgr->feature_mask &= ~ (PP_VBI_TIME_SUPPORT_MASK |
+			hwmgr->feature_mask &= ~(PP_VBI_TIME_SUPPORT_MASK |
 						PP_ENABLE_GFX_CG_THRU_SMU);
 			break;
 		case CHIP_POLARIS11:
@@ -199,7 +195,7 @@ int hwmgr_early_init(struct pp_hwmgr *hwmgr)
 
 int hwmgr_sw_init(struct pp_hwmgr *hwmgr)
 {
-	if (!hwmgr|| !hwmgr->smumgr_funcs || !hwmgr->smumgr_funcs->smu_init)
+	if (!hwmgr || !hwmgr->smumgr_funcs || !hwmgr->smumgr_funcs->smu_init)
 		return -EINVAL;
 
 	phm_register_irq_handlers(hwmgr);
@@ -479,11 +475,17 @@ int polaris_set_asic_special_caps(struct pp_hwmgr *hwmgr)
 						PHM_PlatformCaps_RegulatorHot);
 
 	phm_cap_set(hwmgr->platform_descriptor.platformCaps,
+			PHM_PlatformCaps_MemorySpreadSpectrumSupport);
+	phm_cap_set(hwmgr->platform_descriptor.platformCaps,
+			PHM_PlatformCaps_EngineSpreadSpectrumSupport);
+
+	phm_cap_set(hwmgr->platform_descriptor.platformCaps,
 					PHM_PlatformCaps_AutomaticDCTransition);
 
-	if (hwmgr->chip_id != CHIP_POLARIS10)
+	if (((hwmgr->chip_id == CHIP_POLARIS11) && !hwmgr->is_kicker) ||
+	    (hwmgr->chip_id == CHIP_POLARIS12))
 		phm_cap_set(hwmgr->platform_descriptor.platformCaps,
-					PHM_PlatformCaps_SPLLShutdownSupport);
+				PHM_PlatformCaps_SPLLShutdownSupport);
 
 	if (hwmgr->chip_id != CHIP_POLARIS11) {
 		phm_cap_set(hwmgr->platform_descriptor.platformCaps,

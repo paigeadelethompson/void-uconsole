@@ -8,6 +8,7 @@
 #include <linux/slab.h>
 #include <linux/types.h>
 #include <linux/export.h>
+#include <linux/ktime.h>
 #include <linux/scatterlist.h>
 
 #include <linux/mmc/host.h>
@@ -17,6 +18,7 @@
 
 #include "core.h"
 #include "sd_ops.h"
+#include "mmc_ops.h"
 
 int mmc_app_cmd(struct mmc_host *host, struct mmc_card *card)
 {
@@ -158,7 +160,8 @@ int mmc_send_app_op_cond(struct mmc_host *host, u32 ocr, u32 *rocr)
 	return err;
 }
 
-int mmc_send_if_cond(struct mmc_host *host, u32 ocr)
+static int __mmc_send_if_cond(struct mmc_host *host, u32 ocr, u8 pcie_bits,
+			      u32 *resp)
 {
 	struct mmc_command cmd = {};
 	int err;
@@ -171,7 +174,7 @@ int mmc_send_if_cond(struct mmc_host *host, u32 ocr)
 	 * SD 1.0 cards.
 	 */
 	cmd.opcode = SD_SEND_IF_COND;
-	cmd.arg = ((ocr & 0xFF8000) != 0) << 8 | test_pattern;
+	cmd.arg = ((ocr & 0xFF8000) != 0) << 8 | pcie_bits << 8 | test_pattern;
 	cmd.flags = MMC_RSP_SPI_R7 | MMC_RSP_R7 | MMC_CMD_BCR;
 
 	err = mmc_wait_for_cmd(host, &cmd, 0);
@@ -185,6 +188,50 @@ int mmc_send_if_cond(struct mmc_host *host, u32 ocr)
 
 	if (result_pattern != test_pattern)
 		return -EIO;
+
+	if (resp)
+		*resp = cmd.resp[0];
+
+	return 0;
+}
+
+int mmc_send_if_cond(struct mmc_host *host, u32 ocr)
+{
+	return __mmc_send_if_cond(host, ocr, 0, NULL);
+}
+
+int mmc_send_if_cond_pcie(struct mmc_host *host, u32 ocr)
+{
+	u32 resp = 0;
+	u8 pcie_bits = 0;
+	int ret;
+
+	if (host->caps2 & MMC_CAP2_SD_EXP) {
+		/* Probe card for SD express support via PCIe. */
+		pcie_bits = 0x10;
+		if (host->caps2 & MMC_CAP2_SD_EXP_1_2V)
+			/* Probe also for 1.2V support. */
+			pcie_bits = 0x30;
+	}
+
+	ret = __mmc_send_if_cond(host, ocr, pcie_bits, &resp);
+	if (ret)
+		return 0;
+
+	/* Continue with the SD express init, if the card supports it. */
+	resp &= 0x3000;
+	if (pcie_bits && resp) {
+		if (resp == 0x3000)
+			host->ios.timing = MMC_TIMING_SD_EXP_1_2V;
+		else
+			host->ios.timing = MMC_TIMING_SD_EXP;
+
+		/*
+		 * According to the spec the clock shall also be gated, but
+		 * let's leave this to the host driver for more flexibility.
+		 */
+		return host->ops->init_sd_express(host, &host->ios);
+	}
 
 	return 0;
 }
@@ -264,44 +311,20 @@ int mmc_app_send_scr(struct mmc_card *card)
 int mmc_sd_switch(struct mmc_card *card, int mode, int group,
 	u8 value, u8 *resp)
 {
-	struct mmc_request mrq = {};
-	struct mmc_command cmd = {};
-	struct mmc_data data = {};
-	struct scatterlist sg;
+	u32 cmd_args;
 
 	/* NOTE: caller guarantees resp is heap-allocated */
 
 	mode = !!mode;
 	value &= 0xF;
+	cmd_args = mode << 31 | 0x00FFFFFF;
+	cmd_args &= ~(0xF << (group * 4));
+	cmd_args |= value << (group * 4);
 
-	mrq.cmd = &cmd;
-	mrq.data = &data;
-
-	cmd.opcode = SD_SWITCH;
-	cmd.arg = mode << 31 | 0x00FFFFFF;
-	cmd.arg &= ~(0xF << (group * 4));
-	cmd.arg |= value << (group * 4);
-	cmd.flags = MMC_RSP_SPI_R1 | MMC_RSP_R1 | MMC_CMD_ADTC;
-
-	data.blksz = 64;
-	data.blocks = 1;
-	data.flags = MMC_DATA_READ;
-	data.sg = &sg;
-	data.sg_len = 1;
-
-	sg_init_one(&sg, resp, 64);
-
-	mmc_set_data_timeout(&data, card);
-
-	mmc_wait_for_req(card->host, &mrq);
-
-	if (cmd.error)
-		return cmd.error;
-	if (data.error)
-		return data.error;
-
-	return 0;
+	return mmc_send_adtc_data(card, card->host, SD_SWITCH, cmd_args, resp,
+				  64);
 }
+EXPORT_SYMBOL_GPL(mmc_sd_switch);
 
 int mmc_app_sd_status(struct mmc_card *card, void *ssr)
 {
@@ -343,3 +366,136 @@ int mmc_app_sd_status(struct mmc_card *card, void *ssr)
 
 	return 0;
 }
+
+
+int mmc_sd_write_ext_reg(struct mmc_card *card, u8 fno, u8 page, u16 offset,
+		     u8 reg_data)
+{
+	struct mmc_host *host = card->host;
+	struct mmc_request mrq = {};
+	struct mmc_command cmd = {};
+	struct mmc_data data = {};
+	struct scatterlist sg;
+	u8 *reg_buf;
+
+	reg_buf = card->ext_reg_buf;
+	memset(reg_buf, 0, 512);
+
+	mrq.cmd = &cmd;
+	mrq.data = &data;
+
+	/*
+	 * Arguments of CMD49:
+	 * [31:31] MIO (0 = memory).
+	 * [30:27] FNO (function number).
+	 * [26:26] MW - mask write mode (0 = disable).
+	 * [25:18] page number.
+	 * [17:9] offset address.
+	 * [8:0] length (0 = 1 byte).
+	 */
+	cmd.arg = fno << 27 | page << 18 | offset << 9;
+
+	/* The first byte in the buffer is the data to be written. */
+	reg_buf[0] = reg_data;
+
+	data.flags = MMC_DATA_WRITE;
+	data.blksz = 512;
+	data.blocks = 1;
+	data.sg = &sg;
+	data.sg_len = 1;
+	sg_init_one(&sg, reg_buf, 512);
+
+	cmd.opcode = SD_WRITE_EXTR_SINGLE;
+	cmd.flags = MMC_RSP_R1 | MMC_CMD_ADTC;
+
+	mmc_set_data_timeout(&data, card);
+	mmc_wait_for_req(host, &mrq);
+
+	/*
+	 * Note that, the SD card is allowed to signal busy on DAT0 up to 1s
+	 * after the CMD49. Although, let's leave this to be managed by the
+	 * caller.
+	 */
+
+	if (cmd.error)
+		return cmd.error;
+	if (data.error)
+		return data.error;
+
+	return 0;
+}
+
+int mmc_sd_read_ext_reg(struct mmc_card *card, u8 fno, u8 page,
+			u16 offset, u16 len, u8 *reg_buf)
+{
+	u32 cmd_args;
+
+	/*
+	 * Command arguments of CMD48:
+	 * [31:31] MIO (0 = memory).
+	 * [30:27] FNO (function number).
+	 * [26:26] reserved (0).
+	 * [25:18] page number.
+	 * [17:9] offset address.
+	 * [8:0] length (0 = 1 byte, 1ff = 512 bytes).
+	 */
+	cmd_args = fno << 27 | page << 18 | offset << 9 | (len - 1);
+
+	return mmc_send_adtc_data(card, card->host, SD_READ_EXTR_SINGLE,
+				  cmd_args, reg_buf, 512);
+}
+
+static int mmc_sd_cmdq_switch(struct mmc_card *card, bool enable)
+{
+	int err;
+	u8 reg = 0;
+	u8 *reg_buf = card->ext_reg_buf;
+	ktime_t timeout;
+	/*
+	 * SD offers two command queueing modes - sequential (in-order) and
+	 * voluntary (out-of-order). Apps Class A2 performance is only
+	 * guaranteed for voluntary CQ (bit 1 = 0), so use that in preference
+	 * to sequential.
+	 */
+	if (enable)
+		reg = BIT(0);
+
+	/* Performance enhancement register byte 262 controls command queueing */
+	err = mmc_sd_write_ext_reg(card, card->ext_perf.fno, card->ext_perf.page,
+				   card->ext_perf.offset + 262, reg);
+	if (err)
+		goto out;
+
+	/* Poll the register - cards may have a lazy init/deinit sequence. */
+	timeout = ktime_add_ms(ktime_get(), 10);
+	while (1) {
+		err = mmc_sd_read_ext_reg(card, card->ext_perf.fno, card->ext_perf.page,
+					  card->ext_perf.offset + 262, 1, reg_buf);
+		if (err)
+			break;
+		if ((reg_buf[0] & BIT(0)) == reg)
+			break;
+		if (ktime_after(ktime_get(), timeout)) {
+			err = -EBADMSG;
+			break;
+		}
+		usleep_range(100, 200);
+	}
+out:
+	if (!err)
+		card->ext_csd.cmdq_en = enable;
+
+	return err;
+}
+
+int mmc_sd_cmdq_enable(struct mmc_card *card)
+{
+	return mmc_sd_cmdq_switch(card, true);
+}
+EXPORT_SYMBOL_GPL(mmc_sd_cmdq_enable);
+
+int mmc_sd_cmdq_disable(struct mmc_card *card)
+{
+	return mmc_sd_cmdq_switch(card, false);
+}
+EXPORT_SYMBOL_GPL(mmc_sd_cmdq_disable);

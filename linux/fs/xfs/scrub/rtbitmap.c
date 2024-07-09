@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2017 Oracle.  All Rights Reserved.
- * Author: Darrick J. Wong <darrick.wong@oracle.com>
+ * Copyright (C) 2017-2023 Oracle.  All Rights Reserved.
+ * Author: Darrick J. Wong <djwong@kernel.org>
  */
 #include "xfs.h"
 #include "xfs_fs.h"
@@ -11,28 +11,29 @@
 #include "xfs_mount.h"
 #include "xfs_log_format.h"
 #include "xfs_trans.h"
-#include "xfs_rtalloc.h"
+#include "xfs_rtbitmap.h"
 #include "xfs_inode.h"
 #include "xfs_bmap.h"
+#include "xfs_sb.h"
 #include "scrub/scrub.h"
 #include "scrub/common.h"
 
 /* Set us up with the realtime metadata locked. */
 int
-xchk_setup_rt(
-	struct xfs_scrub	*sc,
-	struct xfs_inode	*ip)
+xchk_setup_rtbitmap(
+	struct xfs_scrub	*sc)
 {
 	int			error;
 
-	error = xchk_setup_fs(sc, ip);
+	error = xchk_trans_alloc(sc, 0);
 	if (error)
 		return error;
 
-	sc->ilock_flags = XFS_ILOCK_EXCL | XFS_ILOCK_RTBITMAP;
-	sc->ip = sc->mp->m_rbmip;
-	xfs_ilock(sc->ip, sc->ilock_flags);
+	error = xchk_install_live_inode(sc, sc->mp->m_rbmip);
+	if (error)
+		return error;
 
+	xchk_ilock(sc, XFS_ILOCK_EXCL | XFS_ILOCK_RTBITMAP);
 	return 0;
 }
 
@@ -41,20 +42,19 @@ xchk_setup_rt(
 /* Scrub a free extent record from the realtime bitmap. */
 STATIC int
 xchk_rtbitmap_rec(
+	struct xfs_mount	*mp,
 	struct xfs_trans	*tp,
-	struct xfs_rtalloc_rec	*rec,
+	const struct xfs_rtalloc_rec *rec,
 	void			*priv)
 {
 	struct xfs_scrub	*sc = priv;
 	xfs_rtblock_t		startblock;
 	xfs_rtblock_t		blockcount;
 
-	startblock = rec->ar_startext * tp->t_mountp->m_sb.sb_rextsize;
-	blockcount = rec->ar_extcount * tp->t_mountp->m_sb.sb_rextsize;
+	startblock = rec->ar_startext * mp->m_sb.sb_rextsize;
+	blockcount = rec->ar_extcount * mp->m_sb.sb_rextsize;
 
-	if (startblock + blockcount <= startblock ||
-	    !xfs_verify_rtbno(sc->mp, startblock) ||
-	    !xfs_verify_rtbno(sc->mp, startblock + blockcount - 1))
+	if (!xfs_verify_rtext(mp, startblock, blockcount))
 		xchk_fblock_set_corrupt(sc, XFS_DATA_FORK, 0);
 	return 0;
 }
@@ -102,7 +102,7 @@ xchk_rtbitmap(
 	int			error;
 
 	/* Is the size of the rtbitmap correct? */
-	if (sc->mp->m_rbmip->i_d.di_size !=
+	if (sc->mp->m_rbmip->i_disk_size !=
 	    XFS_FSB_TO_B(sc->mp, sc->mp->m_sb.sb_rbmblocks)) {
 		xchk_ino_set_corrupt(sc, sc->mp->m_rbmip->i_ino);
 		return 0;
@@ -117,50 +117,13 @@ xchk_rtbitmap(
 	if (error || (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT))
 		return error;
 
-	error = xfs_rtalloc_query_all(sc->tp, xchk_rtbitmap_rec, sc);
+	error = xfs_rtalloc_query_all(sc->mp, sc->tp, xchk_rtbitmap_rec, sc);
 	if (!xchk_fblock_process_error(sc, XFS_DATA_FORK, 0, &error))
 		goto out;
 
 out:
 	return error;
 }
-
-/* Scrub the realtime summary. */
-int
-xchk_rtsummary(
-	struct xfs_scrub	*sc)
-{
-	struct xfs_inode	*rsumip = sc->mp->m_rsumip;
-	struct xfs_inode	*old_ip = sc->ip;
-	uint			old_ilock_flags = sc->ilock_flags;
-	int			error = 0;
-
-	/*
-	 * We ILOCK'd the rt bitmap ip in the setup routine, now lock the
-	 * rt summary ip in compliance with the rt inode locking rules.
-	 *
-	 * Since we switch sc->ip to rsumip we have to save the old ilock
-	 * flags so that we don't mix up the inode state that @sc tracks.
-	 */
-	sc->ip = rsumip;
-	sc->ilock_flags = XFS_ILOCK_EXCL | XFS_ILOCK_RTSUM;
-	xfs_ilock(sc->ip, sc->ilock_flags);
-
-	/* Invoke the fork scrubber. */
-	error = xchk_metadata_inode_forks(sc);
-	if (error || (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT))
-		goto out;
-
-	/* XXX: implement this some day */
-	xchk_set_incomplete(sc);
-out:
-	/* Switch back to the rtbitmap inode and lock flags. */
-	xfs_iunlock(sc->ip, sc->ilock_flags);
-	sc->ilock_flags = old_ilock_flags;
-	sc->ip = old_ip;
-	return error;
-}
-
 
 /* xref check that the extent is not free in the rtbitmap */
 void

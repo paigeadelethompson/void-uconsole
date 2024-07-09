@@ -57,6 +57,7 @@
 
 /* For mmc_card_blockaddr */
 #include "../core/card.h"
+#include "mmc_hsq.h"
 
 #define DRIVER_NAME "sdhost-bcm2835"
 
@@ -146,6 +147,8 @@
 
 struct bcm2835_host {
 	spinlock_t		lock;
+
+	struct rpi_firmware	*fw;
 
 	void __iomem		*ioaddr;
 	phys_addr_t		bus_addr;
@@ -240,20 +243,27 @@ static void __iomem *timer_base;
 #define LOG_ENTRIES (256*1)
 #define LOG_SIZE (sizeof(LOG_ENTRY_T)*LOG_ENTRIES)
 
-static void log_init(struct device *dev, u32 bus_to_phys)
+static void log_init(struct device *dev)
 {
+	struct device_node *np;
+
 	spin_lock_init(&log_lock);
-	sdhost_log_buf = dma_alloc_coherent(dev, LOG_SIZE, &sdhost_log_addr,
-					     GFP_KERNEL);
-	if (sdhost_log_buf) {
-		pr_info("sdhost: log_buf @ %p (%llx)\n",
-			sdhost_log_buf, (u64)sdhost_log_addr);
-		timer_base = ioremap(bus_to_phys + 0x7e003000, SZ_4K);
-		if (!timer_base)
-			pr_err("sdhost: failed to remap timer\n");
+
+	np = of_find_compatible_node(NULL, NULL,
+				     "brcm,bcm2835-system-timer");
+	timer_base = of_iomap(np, 0);
+
+	if (timer_base) {
+		sdhost_log_buf = dma_alloc_coherent(dev, LOG_SIZE, &sdhost_log_addr,
+							GFP_KERNEL);
+		if (sdhost_log_buf)
+			pr_info("sdhost: log_buf @ %p (%llx)\n",
+				sdhost_log_buf, (u64)sdhost_log_addr);
+		else
+			pr_err("sdhost: failed to allocate log buf\n");
+	} else {
+		pr_err("sdhost: failed to remap timer - wrong dtb?\n");
 	}
-	else
-		pr_err("sdhost: failed to allocate log buf\n");
 }
 
 static void log_event_impl(const char *event, u32 param1, u32 param2)
@@ -443,6 +453,7 @@ static void bcm2835_sdhost_reset_internal(struct bcm2835_host *host)
 	bcm2835_sdhost_write(host, SDCDIV_MAX_CDIV, SDCDIV);
 }
 
+#if 0 // todo fix
 static void bcm2835_sdhost_reset(struct mmc_host *mmc)
 {
 	struct bcm2835_host *host = mmc_priv(mmc);
@@ -454,6 +465,7 @@ static void bcm2835_sdhost_reset(struct mmc_host *mmc)
 
 	spin_unlock_irqrestore(&host->lock, flags);
 }
+#endif
 
 static void bcm2835_sdhost_set_ios(struct mmc_host *mmc, struct mmc_ios *ios);
 
@@ -1558,7 +1570,7 @@ void bcm2835_sdhost_set_clock(struct bcm2835_host *host, unsigned int clock)
 	if (host->firmware_sets_cdiv) {
 		u32 msg[3] = { clock, 0, 0 };
 
-		rpi_firmware_property(rpi_firmware_get(NULL),
+		rpi_firmware_property(host->fw,
 				      RPI_FIRMWARE_SET_SDHOST_CLOCK,
 				      &msg, sizeof(msg));
 
@@ -1774,7 +1786,7 @@ static void bcm2835_sdhost_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
 static struct mmc_host_ops bcm2835_sdhost_ops = {
 	.request = bcm2835_sdhost_request,
 	.set_ios = bcm2835_sdhost_set_ios,
-	.hw_reset = bcm2835_sdhost_reset,
+// todo:fix	.hw_reset = bcm2835_sdhost_reset,
 };
 
 static void bcm2835_sdhost_cmd_wait_work(struct work_struct *work)
@@ -1880,13 +1892,16 @@ static void bcm2835_sdhost_tasklet_finish(unsigned long param)
 				mmc_hostname(host->mmc));
 	}
 
-	mmc_request_done(host->mmc, mrq);
+	if (!mmc_hsq_finalize_request(host->mmc, mrq))
+		mmc_request_done(host->mmc, mrq);
 	log_event("TSK>", mrq, 0);
 }
 
-int bcm2835_sdhost_add_host(struct bcm2835_host *host)
+int bcm2835_sdhost_add_host(struct platform_device *pdev)
 {
+	struct bcm2835_host *host = platform_get_drvdata(pdev);
 	struct mmc_host *mmc;
+	struct mmc_hsq *hsq;
 	struct dma_slave_config cfg;
 	char pio_limit_string[20];
 	int ret;
@@ -1919,7 +1934,6 @@ int bcm2835_sdhost_add_host(struct bcm2835_host *host)
 		} else {
 			cfg.src_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
 			cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_4_BYTES;
-			cfg.slave_id = 13;		/* DREQ channel */
 
 			/* Validate the slave configurations */
 
@@ -1982,6 +1996,16 @@ int bcm2835_sdhost_add_host(struct bcm2835_host *host)
 		goto untasklet;
 	}
 
+	hsq = devm_kzalloc(&pdev->dev, sizeof(*hsq), GFP_KERNEL);
+	if (!hsq) {
+		ret = -ENOMEM;
+		goto free_irq;
+	}
+
+	ret = mmc_hsq_init(hsq, host->mmc);
+	if (ret)
+		goto free_irq;
+
 	mmc_add_host(mmc);
 
 	pio_limit_string[0] = '\0';
@@ -1993,6 +2017,9 @@ int bcm2835_sdhost_add_host(struct bcm2835_host *host)
 		pio_limit_string);
 
 	return 0;
+
+free_irq:
+	free_irq(host->irq, host);
 
 untasklet:
 	tasklet_kill(&host->finish_tasklet);
@@ -2008,9 +2035,7 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 	struct resource *iomem;
 	struct bcm2835_host *host;
 	struct mmc_host *mmc;
-	const __be32 *addr;
 	u32 msg[3];
-	int na;
 	int ret;
 
 	pr_debug("bcm2835_sdhost_probe\n");
@@ -2027,24 +2052,13 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 	host->allow_dma = 1;
 	spin_lock_init(&host->lock);
 
-	iomem = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	host->ioaddr = devm_ioremap_resource(dev, iomem);
+	host->ioaddr = devm_platform_get_and_ioremap_resource(pdev, 0, &iomem);
 	if (IS_ERR(host->ioaddr)) {
 		ret = PTR_ERR(host->ioaddr);
 		goto err;
 	}
 
-	na = of_n_addr_cells(node);
-	addr = of_get_address(node, 0, NULL, NULL);
-	if (!addr) {
-		dev_err(dev, "could not get DMA-register address\n");
-		return -ENODEV;
-	}
-	host->bus_addr = (phys_addr_t)of_read_number(addr, na);
-	pr_debug(" - ioaddr %lx, iomem->start %lx, bus_addr %lx\n",
-		 (unsigned long)host->ioaddr,
-		 (unsigned long)iomem->start,
-		 (unsigned long)host->bus_addr);
+	host->bus_addr = iomem->start;
 
 	if (node) {
 		/* Read any custom properties */
@@ -2100,6 +2114,13 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 		goto err;
 	}
 
+	host->fw = rpi_firmware_get(
+		of_parse_phandle(dev->of_node, "firmware", 0));
+	if (!host->fw) {
+		ret = -EPROBE_DEFER;
+		goto err;
+	}
+
 	host->max_clk = clk_get_rate(clk);
 
 	host->irq = platform_get_irq(pdev, 0);
@@ -2113,7 +2134,7 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 		 (unsigned long)host->max_clk,
 		 (int)host->irq);
 
-	log_init(dev, iomem->start - host->bus_addr);
+	log_init(dev);
 
 	if (node)
 		mmc_of_parse(mmc);
@@ -2124,17 +2145,17 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 	msg[1] = ~0;
 	msg[2] = ~0;
 
-	rpi_firmware_property(rpi_firmware_get(NULL),
+	rpi_firmware_property(host->fw,
 			      RPI_FIRMWARE_SET_SDHOST_CLOCK,
 			      &msg, sizeof(msg));
 
 	host->firmware_sets_cdiv = (msg[1] != ~0);
 
-	ret = bcm2835_sdhost_add_host(host);
+	platform_set_drvdata(pdev, host);
+
+	ret = bcm2835_sdhost_add_host(pdev);
 	if (ret)
 		goto err;
-
-	platform_set_drvdata(pdev, host);
 
 	pr_debug("bcm2835_sdhost_probe -> OK\n");
 
@@ -2142,6 +2163,8 @@ static int bcm2835_sdhost_probe(struct platform_device *pdev)
 
 err:
 	pr_debug("bcm2835_sdhost_probe -> err %d\n", ret);
+	if (host->fw)
+		rpi_firmware_put(host->fw);
 	if (host->dma_chan_rxtx)
 		dma_release_channel(host->dma_chan_rxtx);
 	mmc_free_host(mmc);
@@ -2164,6 +2187,7 @@ static int bcm2835_sdhost_remove(struct platform_device *pdev)
 	del_timer_sync(&host->timer);
 
 	tasklet_kill(&host->finish_tasklet);
+	rpi_firmware_put(host->fw);
 	if (host->dma_chan_rxtx)
 		dma_release_channel(host->dma_chan_rxtx);
 	mmc_free_host(host->mmc);

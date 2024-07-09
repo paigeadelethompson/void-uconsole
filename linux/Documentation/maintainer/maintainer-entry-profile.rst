@@ -102,3 +102,7 @@ to do something different in the near future.
    ../doc-guide/maintainer-profile
    ../nvdimm/maintainer-entry-profile
    ../riscv/patch-acceptance
+   ../driver-api/media/maintainer-entry-profile
+   ../driver-api/vfio-pci-device-specific-driver-acceptance
+   ../nvme/feature-and-quirk-policy
+   ../filesystems/xfs-maintainer-entry-profile

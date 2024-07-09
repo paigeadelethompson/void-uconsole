@@ -64,16 +64,18 @@
 			};
 
 			pitft_ts@1 {
+				/* needed to avoid dtc warning */
+				#address-cells = <1>;
+				#interrupt-cells = <1>;
 				compatible = "st,stmpe610";
 				reg = <1>;
 
 				spi-max-frequency = <500000>;
-				irq-gpio = <&gpio 24 0x2>; /* IRQF_TRIGGER_FALLING */
 				interrupts = <24 2>; /* high-to-low edge triggered */
 				interrupt-parent = <&gpio>;
 				interrupt-controller;
 
-				stmpe_touchscreen {
+				stmpe_touchscreen: stmpe_touchscreen {
 					compatible = "st,stmpe-ts";
 					st,sample-time = <4>;
 					st,mod-12b = <1>;
@@ -112,8 +114,13 @@
 
 	__overrides__ {
 		speed =   <&pitft>,"spi-max-frequency:0";
-		rotate =  <&pitft>,"rotate:0";
+		rotate =  <&pitft>,"rotate:0", /* fbtft */
+			  <&pitft>,"rotation:0"; /* drm */
 		fps =     <&pitft>,"fps:0";
 		debug =   <&pitft>,"debug:0";
+		drm =     <&pitft>,"compatible=adafruit,yx240qv29";
+		touch-invx  = <&stmpe_touchscreen>,"touchscreen-inverted-x?";
+		touch-invy  = <&stmpe_touchscreen>,"touchscreen-inverted-y?";
+		touch-swapxy = <&stmpe_touchscreen>,"touchscreen-swapped-x-y?";
 	};
 };

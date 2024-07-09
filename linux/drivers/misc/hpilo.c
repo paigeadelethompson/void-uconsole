@@ -25,7 +25,9 @@
 #include <linux/slab.h>
 #include "hpilo.h"
 
-static struct class *ilo_class;
+static const struct class ilo_class = {
+	.name = "iLO",
+};
 static unsigned int ilo_major;
 static unsigned int max_ccb = 16;
 static char ilo_hwdev[MAX_ILO_DEV];
@@ -392,12 +394,6 @@ static inline int is_db_reset(int db_out)
 	return db_out & (1 << DB_RESET);
 }
 
-static inline int is_device_reset(struct ilo_hwinfo *hw)
-{
-	/* check for global reset condition */
-	return is_db_reset(get_device_outbound(hw));
-}
-
 static inline void clear_pending_db(struct ilo_hwinfo *hw, int clr)
 {
 	iowrite32(clr, &hw->mmio_vaddr[DB_OUT]);
@@ -693,6 +689,8 @@ static int ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 {
 	int bar;
 	unsigned long off;
+	u8 pci_rev_id;
+	int rc;
 
 	/* map the memory mapped i/o registers */
 	hw->mmio_vaddr = pci_iomap(pdev, 1, 0);
@@ -702,7 +700,13 @@ static int ilo_map_device(struct pci_dev *pdev, struct ilo_hwinfo *hw)
 	}
 
 	/* map the adapter shared memory region */
-	if (pdev->subsystem_device == 0x00E4) {
+	rc = pci_read_config_byte(pdev, PCI_REVISION_ID, &pci_rev_id);
+	if (rc != 0) {
+		dev_err(&pdev->dev, "Error reading PCI rev id: %d\n", rc);
+		goto out;
+	}
+
+	if (pci_rev_id >= PCI_REV_ID_NECHES) {
 		bar = 5;
 		/* Last 8k is reserved for CCBs */
 		off = pci_resource_len(pdev, bar) - 0x2000;
@@ -744,7 +748,7 @@ static void ilo_remove(struct pci_dev *pdev)
 
 	minor = MINOR(ilo_hw->cdev.dev);
 	for (i = minor; i < minor + max_ccb; i++)
-		device_destroy(ilo_class, MKDEV(ilo_major, i));
+		device_destroy(&ilo_class, MKDEV(ilo_major, i));
 
 	cdev_del(&ilo_hw->cdev);
 	ilo_disable_interrupts(ilo_hw);
@@ -837,7 +841,7 @@ static int ilo_probe(struct pci_dev *pdev,
 
 	for (minor = 0 ; minor < max_ccb; minor++) {
 		struct device *dev;
-		dev = device_create(ilo_class, &pdev->dev,
+		dev = device_create(&ilo_class, &pdev->dev,
 				    MKDEV(ilo_major, minor), NULL,
 				    "hpilo!d%dccb%d", devnum, minor);
 		if (IS_ERR(dev))
@@ -880,11 +884,9 @@ static int __init ilo_init(void)
 	int error;
 	dev_t dev;
 
-	ilo_class = class_create(THIS_MODULE, "iLO");
-	if (IS_ERR(ilo_class)) {
-		error = PTR_ERR(ilo_class);
+	error = class_register(&ilo_class);
+	if (error)
 		goto out;
-	}
 
 	error = alloc_chrdev_region(&dev, 0, MAX_OPEN, ILO_NAME);
 	if (error)
@@ -900,7 +902,7 @@ static int __init ilo_init(void)
 chr_remove:
 	unregister_chrdev_region(dev, MAX_OPEN);
 class_destroy:
-	class_destroy(ilo_class);
+	class_unregister(&ilo_class);
 out:
 	return error;
 }
@@ -909,7 +911,7 @@ static void __exit ilo_exit(void)
 {
 	pci_unregister_driver(&ilo_driver);
 	unregister_chrdev_region(MKDEV(ilo_major, 0), MAX_OPEN);
-	class_destroy(ilo_class);
+	class_unregister(&ilo_class);
 }
 
 MODULE_VERSION("1.5.0");

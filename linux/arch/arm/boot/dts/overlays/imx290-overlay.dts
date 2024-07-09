@@ -13,16 +13,16 @@
 	// included imx290_327 overlay file.
 
 	fragment@101 {
-		target = <&imx290>;
+		target = <&cam_node>;
 		__overlay__ {
-			compatible = "sony,imx290";
+			compatible = "sony,imx290lqr";
 		};
 	};
 
 	fragment@102 {
-		target = <&imx290>;
+		target = <&cam_node>;
 		__dormant__ {
-			compatible = "sony,imx290-mono";
+			compatible = "sony,imx290llr";
 		};
 	};
 

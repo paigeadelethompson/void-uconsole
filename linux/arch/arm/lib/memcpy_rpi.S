@@ -27,6 +27,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 */
 
 #include <linux/linkage.h>
+#include <asm/assembler.h>
+#include <asm/unwind.h>
 #include "arm-mem.h"
 #include "memcpymove.h"
 
@@ -56,6 +58,8 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 ENTRY(mmiocpy)
 ENTRY(memcpy)
+ENTRY(__memcpy)
         memcpy  0
+ENDPROC(__memcpy)
 ENDPROC(memcpy)
 ENDPROC(mmiocpy)

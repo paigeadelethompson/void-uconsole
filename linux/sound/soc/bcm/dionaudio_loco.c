@@ -32,7 +32,10 @@ static int snd_rpi_dionaudio_loco_hw_params(
 	struct snd_soc_dai *cpu_dai = asoc_rtd_to_cpu(rtd, 0);
 
 	unsigned int sample_bits =
-		snd_pcm_format_physical_width(params_format(params));
+		snd_pcm_format_width(params_format(params));
+
+	/* Using powers of 2 allows for an integer clock divisor */
+	sample_bits = sample_bits <= 16 ? 16 : 32;
 
 	return snd_soc_dai_set_bclk_ratio(cpu_dai, sample_bits * 2);
 }
@@ -62,6 +65,7 @@ static struct snd_soc_dai_link snd_rpi_dionaudio_loco_dai[] = {
 /* audio machine driver */
 static struct snd_soc_card snd_rpi_dionaudio_loco = {
 	.name		= "snd_rpi_dionaudio_loco",
+	.owner		= THIS_MODULE,
 	.dai_link	= snd_rpi_dionaudio_loco_dai,
 	.num_links	= ARRAY_SIZE(snd_rpi_dionaudio_loco_dai),
 };

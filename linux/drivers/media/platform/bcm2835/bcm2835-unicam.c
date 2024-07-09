@@ -49,6 +49,7 @@
 #include <linux/device.h>
 #include <linux/dma-mapping.h>
 #include <linux/err.h>
+#include <linux/gpio/consumer.h>
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
@@ -62,6 +63,7 @@
 #include <linux/uaccess.h>
 #include <linux/videodev2.h>
 
+#include <media/mipi-csi2.h>
 #include <media/v4l2-common.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-dev.h>
@@ -72,6 +74,8 @@
 #include <media/v4l2-fwnode.h>
 #include <media/videobuf2-dma-contig.h>
 
+#include <media/v4l2-async.h>
+
 #include "vc4-regs-unicam.h"
 
 #define UNICAM_MODULE_NAME	"unicam"
@@ -80,6 +84,10 @@
 static int debug;
 module_param(debug, int, 0644);
 MODULE_PARM_DESC(debug, "Debug level 0-3");
+
+static int media_controller;
+module_param(media_controller, int, 0644);
+MODULE_PARM_DESC(media_controller, "Use media controller API");
 
 #define unicam_dbg(level, dev, fmt, arg...)	\
 		v4l2_dbg(level, debug, &(dev)->v4l2_dev, fmt, ##arg)
@@ -117,11 +125,14 @@ MODULE_PARM_DESC(debug, "Debug level 0-3");
 #define MIN_WIDTH		16
 #define MIN_HEIGHT		16
 /* Default size of the embedded buffer */
-#define UNICAM_EMBEDDED_SIZE	8192
+#define UNICAM_EMBEDDED_SIZE	16384
 
 /*
- * Size of the dummy buffer. Can be any size really, but the DMA
- * allocation works in units of page sizes.
+ * Size of the dummy buffer allocation.
+ *
+ * Due to a HW bug causing buffer overruns in circular buffer mode under certain
+ * (not yet fully known) conditions, the dummy buffer allocation is set to a
+ * a single page size, but the hardware gets programmed with a buffer size of 0.
  */
 #define DUMMY_BUF_SIZE		(PAGE_SIZE)
 
@@ -131,6 +142,22 @@ enum pad_types {
 	MAX_NODES
 };
 
+#define MASK_CS_DEFAULT		BIT(V4L2_COLORSPACE_DEFAULT)
+#define MASK_CS_SMPTE170M	BIT(V4L2_COLORSPACE_SMPTE170M)
+#define MASK_CS_SMPTE240M	BIT(V4L2_COLORSPACE_SMPTE240M)
+#define MASK_CS_REC709		BIT(V4L2_COLORSPACE_REC709)
+#define MASK_CS_BT878		BIT(V4L2_COLORSPACE_BT878)
+#define MASK_CS_470_M		BIT(V4L2_COLORSPACE_470_SYSTEM_M)
+#define MASK_CS_470_BG		BIT(V4L2_COLORSPACE_470_SYSTEM_BG)
+#define MASK_CS_JPEG		BIT(V4L2_COLORSPACE_JPEG)
+#define MASK_CS_SRGB		BIT(V4L2_COLORSPACE_SRGB)
+#define MASK_CS_OPRGB		BIT(V4L2_COLORSPACE_OPRGB)
+#define MASK_CS_BT2020		BIT(V4L2_COLORSPACE_BT2020)
+#define MASK_CS_RAW		BIT(V4L2_COLORSPACE_RAW)
+#define MASK_CS_DCI_P3		BIT(V4L2_COLORSPACE_DCI_P3)
+
+#define MAX_COLORSPACE		32
+
 /*
  * struct unicam_fmt - Unicam media bus format information
  * @pixelformat: V4L2 pixel format FCC identifier. 0 if n/a.
@@ -139,8 +166,14 @@ enum pad_types {
  * @code: V4L2 media bus format code.
  * @depth: Bits per pixel as delivered from the source.
  * @csi_dt: CSI data type.
+ * @valid_colorspaces: Bitmask of valid colorspaces so that the Media Controller
+ *		centric try_fmt can validate the colorspace and pass
+ *		v4l2-compliance.
  * @check_variants: Flag to denote that there are multiple mediabus formats
  *		still in the list that could match this V4L2 format.
+ * @mc_skip: Media Controller shouldn't list this format via ENUM_FMT as it is
+ *		a duplicate of an earlier format.
+ * @metadata_fmt: This format only applies to the metadata pad.
  */
 struct unicam_fmt {
 	u32	fourcc;
@@ -148,7 +181,10 @@ struct unicam_fmt {
 	u32	code;
 	u8	depth;
 	u8	csi_dt;
-	u8	check_variants;
+	u32	valid_colorspaces;
+	u8	check_variants:1;
+	u8	mc_skip:1;
+	u8	metadata_fmt:1;
 };
 
 static const struct unicam_fmt formats[] = {
@@ -157,211 +193,284 @@ static const struct unicam_fmt formats[] = {
 		.fourcc		= V4L2_PIX_FMT_YUYV,
 		.code		= MEDIA_BUS_FMT_YUYV8_2X8,
 		.depth		= 16,
-		.csi_dt		= 0x1e,
+		.csi_dt		= MIPI_CSI2_DT_YUV422_8B,
 		.check_variants = 1,
+		.valid_colorspaces = MASK_CS_SMPTE170M | MASK_CS_REC709 |
+				     MASK_CS_JPEG,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_UYVY,
 		.code		= MEDIA_BUS_FMT_UYVY8_2X8,
 		.depth		= 16,
-		.csi_dt		= 0x1e,
+		.csi_dt		= MIPI_CSI2_DT_YUV422_8B,
 		.check_variants = 1,
+		.valid_colorspaces = MASK_CS_SMPTE170M | MASK_CS_REC709 |
+				     MASK_CS_JPEG,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_YVYU,
 		.code		= MEDIA_BUS_FMT_YVYU8_2X8,
 		.depth		= 16,
-		.csi_dt		= 0x1e,
+		.csi_dt		= MIPI_CSI2_DT_YUV422_8B,
 		.check_variants = 1,
+		.valid_colorspaces = MASK_CS_SMPTE170M | MASK_CS_REC709 |
+				     MASK_CS_JPEG,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_VYUY,
 		.code		= MEDIA_BUS_FMT_VYUY8_2X8,
 		.depth		= 16,
-		.csi_dt		= 0x1e,
+		.csi_dt		= MIPI_CSI2_DT_YUV422_8B,
 		.check_variants = 1,
+		.valid_colorspaces = MASK_CS_SMPTE170M | MASK_CS_REC709 |
+				     MASK_CS_JPEG,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_YUYV,
 		.code		= MEDIA_BUS_FMT_YUYV8_1X16,
 		.depth		= 16,
-		.csi_dt		= 0x1e,
+		.csi_dt		= MIPI_CSI2_DT_YUV422_8B,
+		.mc_skip	= 1,
+		.valid_colorspaces = MASK_CS_SMPTE170M | MASK_CS_REC709 |
+				     MASK_CS_JPEG,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_UYVY,
 		.code		= MEDIA_BUS_FMT_UYVY8_1X16,
 		.depth		= 16,
-		.csi_dt		= 0x1e,
+		.csi_dt		= MIPI_CSI2_DT_YUV422_8B,
+		.mc_skip	= 1,
+		.valid_colorspaces = MASK_CS_SMPTE170M | MASK_CS_REC709 |
+				     MASK_CS_JPEG,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_YVYU,
 		.code		= MEDIA_BUS_FMT_YVYU8_1X16,
 		.depth		= 16,
-		.csi_dt		= 0x1e,
+		.csi_dt		= MIPI_CSI2_DT_YUV422_8B,
+		.mc_skip	= 1,
+		.valid_colorspaces = MASK_CS_SMPTE170M | MASK_CS_REC709 |
+				     MASK_CS_JPEG,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_VYUY,
 		.code		= MEDIA_BUS_FMT_VYUY8_1X16,
 		.depth		= 16,
-		.csi_dt		= 0x1e,
+		.csi_dt		= MIPI_CSI2_DT_YUV422_8B,
+		.mc_skip	= 1,
+		.valid_colorspaces = MASK_CS_SMPTE170M | MASK_CS_REC709 |
+				     MASK_CS_JPEG,
 	}, {
 	/* RGB Formats */
 		.fourcc		= V4L2_PIX_FMT_RGB565, /* gggbbbbb rrrrrggg */
 		.code		= MEDIA_BUS_FMT_RGB565_2X8_LE,
 		.depth		= 16,
-		.csi_dt		= 0x22,
+		.csi_dt		= MIPI_CSI2_DT_RGB565,
+		.valid_colorspaces = MASK_CS_SRGB,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_RGB565X, /* rrrrrggg gggbbbbb */
 		.code		= MEDIA_BUS_FMT_RGB565_2X8_BE,
 		.depth		= 16,
-		.csi_dt		= 0x22
+		.csi_dt		= MIPI_CSI2_DT_RGB565,
+		.valid_colorspaces = MASK_CS_SRGB,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_RGB555, /* gggbbbbb arrrrrgg */
 		.code		= MEDIA_BUS_FMT_RGB555_2X8_PADHI_LE,
 		.depth		= 16,
-		.csi_dt		= 0x21,
+		.csi_dt		= MIPI_CSI2_DT_RGB555,
+		.valid_colorspaces = MASK_CS_SRGB,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_RGB555X, /* arrrrrgg gggbbbbb */
 		.code		= MEDIA_BUS_FMT_RGB555_2X8_PADHI_BE,
 		.depth		= 16,
-		.csi_dt		= 0x21,
+		.csi_dt		= MIPI_CSI2_DT_RGB555,
+		.valid_colorspaces = MASK_CS_SRGB,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_RGB24, /* rgb */
 		.code		= MEDIA_BUS_FMT_RGB888_1X24,
 		.depth		= 24,
-		.csi_dt		= 0x24,
+		.csi_dt		= MIPI_CSI2_DT_RGB888,
+		.valid_colorspaces = MASK_CS_SRGB,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_BGR24, /* bgr */
 		.code		= MEDIA_BUS_FMT_BGR888_1X24,
 		.depth		= 24,
-		.csi_dt		= 0x24,
+		.csi_dt		= MIPI_CSI2_DT_RGB888,
+		.valid_colorspaces = MASK_CS_SRGB,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_RGB32, /* argb */
 		.code		= MEDIA_BUS_FMT_ARGB8888_1X32,
 		.depth		= 32,
 		.csi_dt		= 0x0,
+		.valid_colorspaces = MASK_CS_SRGB,
 	}, {
 	/* Bayer Formats */
 		.fourcc		= V4L2_PIX_FMT_SBGGR8,
 		.code		= MEDIA_BUS_FMT_SBGGR8_1X8,
 		.depth		= 8,
-		.csi_dt		= 0x2a,
+		.csi_dt		= MIPI_CSI2_DT_RAW8,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SGBRG8,
 		.code		= MEDIA_BUS_FMT_SGBRG8_1X8,
 		.depth		= 8,
-		.csi_dt		= 0x2a,
+		.csi_dt		= MIPI_CSI2_DT_RAW8,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SGRBG8,
 		.code		= MEDIA_BUS_FMT_SGRBG8_1X8,
 		.depth		= 8,
-		.csi_dt		= 0x2a,
+		.csi_dt		= MIPI_CSI2_DT_RAW8,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SRGGB8,
 		.code		= MEDIA_BUS_FMT_SRGGB8_1X8,
 		.depth		= 8,
-		.csi_dt		= 0x2a,
+		.csi_dt		= MIPI_CSI2_DT_RAW8,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SBGGR10P,
 		.repacked_fourcc = V4L2_PIX_FMT_SBGGR10,
 		.code		= MEDIA_BUS_FMT_SBGGR10_1X10,
 		.depth		= 10,
-		.csi_dt		= 0x2b,
+		.csi_dt		= MIPI_CSI2_DT_RAW10,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SGBRG10P,
 		.repacked_fourcc = V4L2_PIX_FMT_SGBRG10,
 		.code		= MEDIA_BUS_FMT_SGBRG10_1X10,
 		.depth		= 10,
-		.csi_dt		= 0x2b,
+		.csi_dt		= MIPI_CSI2_DT_RAW10,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SGRBG10P,
 		.repacked_fourcc = V4L2_PIX_FMT_SGRBG10,
 		.code		= MEDIA_BUS_FMT_SGRBG10_1X10,
 		.depth		= 10,
-		.csi_dt		= 0x2b,
+		.csi_dt		= MIPI_CSI2_DT_RAW10,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SRGGB10P,
 		.repacked_fourcc = V4L2_PIX_FMT_SRGGB10,
 		.code		= MEDIA_BUS_FMT_SRGGB10_1X10,
 		.depth		= 10,
-		.csi_dt		= 0x2b,
+		.csi_dt		= MIPI_CSI2_DT_RAW10,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SBGGR12P,
 		.repacked_fourcc = V4L2_PIX_FMT_SBGGR12,
 		.code		= MEDIA_BUS_FMT_SBGGR12_1X12,
 		.depth		= 12,
-		.csi_dt		= 0x2c,
+		.csi_dt		= MIPI_CSI2_DT_RAW12,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SGBRG12P,
 		.repacked_fourcc = V4L2_PIX_FMT_SGBRG12,
 		.code		= MEDIA_BUS_FMT_SGBRG12_1X12,
 		.depth		= 12,
-		.csi_dt		= 0x2c,
+		.csi_dt		= MIPI_CSI2_DT_RAW12,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SGRBG12P,
 		.repacked_fourcc = V4L2_PIX_FMT_SGRBG12,
 		.code		= MEDIA_BUS_FMT_SGRBG12_1X12,
 		.depth		= 12,
-		.csi_dt		= 0x2c,
+		.csi_dt		= MIPI_CSI2_DT_RAW12,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SRGGB12P,
 		.repacked_fourcc = V4L2_PIX_FMT_SRGGB12,
 		.code		= MEDIA_BUS_FMT_SRGGB12_1X12,
 		.depth		= 12,
-		.csi_dt		= 0x2c,
+		.csi_dt		= MIPI_CSI2_DT_RAW12,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SBGGR14P,
 		.repacked_fourcc = V4L2_PIX_FMT_SBGGR14,
 		.code		= MEDIA_BUS_FMT_SBGGR14_1X14,
 		.depth		= 14,
-		.csi_dt		= 0x2d,
+		.csi_dt		= MIPI_CSI2_DT_RAW14,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SGBRG14P,
 		.repacked_fourcc = V4L2_PIX_FMT_SGBRG14,
 		.code		= MEDIA_BUS_FMT_SGBRG14_1X14,
 		.depth		= 14,
-		.csi_dt		= 0x2d,
+		.csi_dt		= MIPI_CSI2_DT_RAW14,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SGRBG14P,
 		.repacked_fourcc = V4L2_PIX_FMT_SGRBG14,
 		.code		= MEDIA_BUS_FMT_SGRBG14_1X14,
 		.depth		= 14,
-		.csi_dt		= 0x2d,
+		.csi_dt		= MIPI_CSI2_DT_RAW14,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_SRGGB14P,
 		.repacked_fourcc = V4L2_PIX_FMT_SRGGB14,
 		.code		= MEDIA_BUS_FMT_SRGGB14_1X14,
 		.depth		= 14,
-		.csi_dt		= 0x2d,
+		.csi_dt		= MIPI_CSI2_DT_RAW14,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
-	/*
-	 * 16 bit Bayer formats could be supported, but there is no CSI2
-	 * data_type defined for raw 16, and no sensors that produce it at
-	 * present.
-	 */
+		.fourcc		= V4L2_PIX_FMT_SBGGR16,
+		.code		= MEDIA_BUS_FMT_SBGGR16_1X16,
+		.depth		= 16,
+		.csi_dt		= MIPI_CSI2_DT_RAW16,
+		.valid_colorspaces = MASK_CS_RAW,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SGBRG16,
+		.code		= MEDIA_BUS_FMT_SGBRG16_1X16,
+		.depth		= 16,
+		.csi_dt		= MIPI_CSI2_DT_RAW16,
+		.valid_colorspaces = MASK_CS_RAW,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SGRBG16,
+		.code		= MEDIA_BUS_FMT_SGRBG16_1X16,
+		.depth		= 16,
+		.csi_dt		= MIPI_CSI2_DT_RAW16,
+		.valid_colorspaces = MASK_CS_RAW,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_SRGGB16,
+		.code		= MEDIA_BUS_FMT_SRGGB16_1X16,
+		.depth		= 16,
+		.csi_dt		= MIPI_CSI2_DT_RAW16,
+		.valid_colorspaces = MASK_CS_RAW,
+	}, {
 
 	/* Greyscale formats */
 		.fourcc		= V4L2_PIX_FMT_GREY,
 		.code		= MEDIA_BUS_FMT_Y8_1X8,
 		.depth		= 8,
-		.csi_dt		= 0x2a,
+		.csi_dt		= MIPI_CSI2_DT_RAW8,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_Y10P,
 		.repacked_fourcc = V4L2_PIX_FMT_Y10,
 		.code		= MEDIA_BUS_FMT_Y10_1X10,
 		.depth		= 10,
-		.csi_dt		= 0x2b,
+		.csi_dt		= MIPI_CSI2_DT_RAW10,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_Y12P,
 		.repacked_fourcc = V4L2_PIX_FMT_Y12,
 		.code		= MEDIA_BUS_FMT_Y12_1X12,
 		.depth		= 12,
-		.csi_dt		= 0x2c,
+		.csi_dt		= MIPI_CSI2_DT_RAW12,
+		.valid_colorspaces = MASK_CS_RAW,
 	}, {
 		.fourcc		= V4L2_PIX_FMT_Y14P,
 		.repacked_fourcc = V4L2_PIX_FMT_Y14,
 		.code		= MEDIA_BUS_FMT_Y14_1X14,
 		.depth		= 14,
-		.csi_dt		= 0x2d,
+		.csi_dt		= MIPI_CSI2_DT_RAW14,
+		.valid_colorspaces = MASK_CS_RAW,
+	}, {
+		.fourcc		= V4L2_PIX_FMT_Y16,
+		.code		= MEDIA_BUS_FMT_Y16_1X16,
+		.depth		= 16,
+		.csi_dt		= MIPI_CSI2_DT_RAW16,
+		.valid_colorspaces = MASK_CS_RAW,
 	},
 	/* Embedded data format */
 	{
 		.fourcc		= V4L2_META_FMT_SENSOR_DATA,
 		.code		= MEDIA_BUS_FMT_SENSOR_DATA,
 		.depth		= 8,
+		.metadata_fmt	= 1,
 	}
 };
 
@@ -380,6 +489,8 @@ struct unicam_node {
 	int open;
 	bool streaming;
 	unsigned int pad_id;
+	/* Source pad id on the sensor for this node */
+	unsigned int src_pad_id;
 	/* Pointer pointing to current v4l2_buffer */
 	struct unicam_buffer *cur_frm;
 	/* Pointer pointing to next v4l2_buffer */
@@ -404,6 +515,7 @@ struct unicam_node {
 	struct unicam_device *dev;
 	struct media_pad pad;
 	unsigned int embedded_lines;
+	struct media_pipeline pipe;
 	/*
 	 * Dummy buffer intended to be used by unicam
 	 * if we have no other queued buffers to swap to.
@@ -416,7 +528,7 @@ struct unicam_device {
 	struct kref kref;
 
 	/* V4l2 specific parameters */
-	struct v4l2_async_subdev asd;
+	struct v4l2_async_connection *asd;
 
 	/* peripheral base address */
 	void __iomem *base;
@@ -432,16 +544,19 @@ struct unicam_device {
 	struct v4l2_device v4l2_dev;
 	struct media_device mdev;
 
+	struct gpio_desc *sync_gpio;
+
 	/* parent device */
 	struct platform_device *pdev;
 	/* subdevice async Notifier */
 	struct v4l2_async_notifier notifier;
 	unsigned int sequence;
+	bool frame_started;
 
 	/* ptr to  sub device */
 	struct v4l2_subdev *sensor;
 	/* Pad config for the sensor */
-	struct v4l2_subdev_pad_config *sensor_config;
+	struct v4l2_subdev_state *sensor_state;
 
 	enum v4l2_mbus_type bus_type;
 	/*
@@ -455,6 +570,8 @@ struct unicam_device {
 
 	struct unicam_node node[MAX_NODES];
 	struct v4l2_ctrl_handler ctrl_handler;
+
+	bool mc_api;
 };
 
 static inline struct unicam_device *
@@ -588,11 +705,11 @@ static int __subdev_get_format(struct unicam_device *dev,
 {
 	struct v4l2_subdev_format sd_fmt = {
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
-		.pad = pad_id
+		.pad = dev->node[pad_id].src_pad_id,
 	};
 	int ret;
 
-	ret = v4l2_subdev_call(dev->sensor, pad, get_fmt, dev->sensor_config,
+	ret = v4l2_subdev_call(dev->sensor, pad, get_fmt, dev->sensor_state,
 			       &sd_fmt);
 	if (ret < 0)
 		return ret;
@@ -610,13 +727,13 @@ static int __subdev_set_format(struct unicam_device *dev,
 {
 	struct v4l2_subdev_format sd_fmt = {
 		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
-		.pad = pad_id
+		.pad = dev->node[pad_id].src_pad_id,
 	};
 	int ret;
 
 	sd_fmt.format = *fmt;
 
-	ret = v4l2_subdev_call(dev->sensor, pad, set_fmt, dev->sensor_config,
+	ret = v4l2_subdev_call(dev->sensor, pad, set_fmt, dev->sensor_state,
 			       &sd_fmt);
 	if (ret < 0)
 		return ret;
@@ -759,8 +876,7 @@ static void unicam_schedule_dummy_buffer(struct unicam_node *node)
 	unicam_dbg(3, dev, "Scheduling dummy buffer for node %d\n",
 		   node->pad_id);
 
-	unicam_wr_dma_addr(dev, node->dummy_buf_dma_addr, DUMMY_BUF_SIZE,
-			   node->pad_id);
+	unicam_wr_dma_addr(dev, node->dummy_buf_dma_addr, 0, node->pad_id);
 	node->next_frm = NULL;
 }
 
@@ -798,6 +914,7 @@ static irqreturn_t unicam_isr(int irq, void *dev)
 	unsigned int sequence = unicam->sequence;
 	unsigned int i;
 	u32 ista, sta;
+	bool fe;
 	u64 ts;
 
 	sta = reg_read(unicam, UNICAM_STA);
@@ -815,12 +932,22 @@ static irqreturn_t unicam_isr(int irq, void *dev)
 		return IRQ_HANDLED;
 
 	/*
+	 * Look for either the Frame End interrupt or the Packet Capture status
+	 * to signal a frame end.
+	 */
+	fe = (ista & UNICAM_FEI || sta & UNICAM_PI0);
+
+	/*
 	 * We must run the frame end handler first. If we have a valid next_frm
 	 * and we get a simultaneout FE + FS interrupt, running the FS handler
 	 * first would null out the next_frm ptr and we would have lost the
 	 * buffer forever.
 	 */
-	if (ista & UNICAM_FEI || sta & UNICAM_PI0) {
+	if (fe) {
+		bool inc_seq = unicam->frame_started;
+
+		if (unicam->sync_gpio)
+			gpiod_set_value(unicam->sync_gpio, 0);
 		/*
 		 * Ensure we have swapped buffers already as we can't
 		 * stop the peripheral. If no buffer is available, use a
@@ -828,15 +955,51 @@ static irqreturn_t unicam_isr(int irq, void *dev)
 		 * to use.
 		 */
 		for (i = 0; i < ARRAY_SIZE(unicam->node); i++) {
-			if (!unicam->node[i].streaming)
+			struct unicam_node *node = &unicam->node[i];
+
+			if (!node->streaming)
 				continue;
 
-			if (unicam->node[i].cur_frm)
-				unicam_process_buffer_complete(&unicam->node[i],
-							       sequence);
-			unicam->node[i].cur_frm = unicam->node[i].next_frm;
+			/*
+			 * If cur_frm == next_frm, it means we have not had
+			 * a chance to swap buffers, likely due to having
+			 * multiple interrupts occurring simultaneously (like FE
+			 * + FS + LS). In this case, we cannot signal the buffer
+			 * as complete, as the HW will reuse that buffer.
+			 */
+			if (node->cur_frm && node->cur_frm != node->next_frm) {
+				/*
+				 * This condition checks if FE + FS for the same
+				 * frame has occurred. In such cases, we cannot
+				 * return out the frame, as no buffer handling
+				 * or timestamping has yet been done as part of
+				 * the FS handler.
+				 */
+				if (!node->cur_frm->vb.vb2_buf.timestamp) {
+					unicam_dbg(2, unicam, "ISR: FE without FS, dropping frame\n");
+					continue;
+				}
+
+				unicam_process_buffer_complete(node, sequence);
+				node->cur_frm = node->next_frm;
+				node->next_frm = NULL;
+				inc_seq = true;
+			} else {
+				node->cur_frm = node->next_frm;
+			}
 		}
-		unicam->sequence++;
+
+		/*
+		 * Increment the sequence number conditionally on either a FS
+		 * having already occurred, or in the FE + FS condition as
+		 * caught in the FE handler above. This ensures the sequence
+		 * number corresponds to the frames generated by the sensor, not
+		 * the frames dequeued to userland.
+		 */
+		if (inc_seq) {
+			unicam->sequence++;
+			unicam->frame_started = false;
+		}
 	}
 
 	if (ista & UNICAM_FSI) {
@@ -845,6 +1008,10 @@ static irqreturn_t unicam_isr(int irq, void *dev)
 		 * aka frame start.
 		 */
 		ts = ktime_get_ns();
+
+		if (unicam->sync_gpio)
+			gpiod_set_value(unicam->sync_gpio, 1);
+
 		for (i = 0; i < ARRAY_SIZE(unicam->node); i++) {
 			if (!unicam->node[i].streaming)
 				continue;
@@ -852,15 +1019,34 @@ static irqreturn_t unicam_isr(int irq, void *dev)
 			if (unicam->node[i].cur_frm)
 				unicam->node[i].cur_frm->vb.vb2_buf.timestamp =
 								ts;
+			else
+				unicam_dbg(2, unicam, "ISR: [%d] Dropping frame, buffer not available at FS\n",
+					   i);
 			/*
 			 * Set the next frame output to go to a dummy frame
-			 * if we have not managed to obtain another frame
-			 * from the queue.
+			 * if no buffer currently queued.
 			 */
-			unicam_schedule_dummy_buffer(&unicam->node[i]);
+			if (!unicam->node[i].next_frm ||
+			    unicam->node[i].next_frm == unicam->node[i].cur_frm) {
+				unicam_schedule_dummy_buffer(&unicam->node[i]);
+			} else if (unicam->node[i].cur_frm) {
+				/*
+				 * Repeated FS without FE. Hardware will have
+				 * swapped buffers, but the cur_frm doesn't
+				 * contain valid data. Return cur_frm to the
+				 * queue.
+				 */
+				spin_lock(&unicam->node[i].dma_queue_lock);
+				list_add_tail(&unicam->node[i].cur_frm->list,
+					      &unicam->node[i].dma_queue);
+				spin_unlock(&unicam->node[i].dma_queue_lock);
+				unicam->node[i].cur_frm = unicam->node[i].next_frm;
+				unicam->node[i].next_frm = NULL;
+			}
 		}
 
 		unicam_queue_event_sof(unicam);
+		unicam->frame_started = true;
 	}
 
 	/*
@@ -868,7 +1054,7 @@ static irqreturn_t unicam_isr(int irq, void *dev)
 	 * where the HW does not actually swap it if the new frame has
 	 * already started.
 	 */
-	if (ista & (UNICAM_FSI | UNICAM_LCI) && !(ista & UNICAM_FEI)) {
+	if (ista & (UNICAM_FSI | UNICAM_LCI) && !fe) {
 		for (i = 0; i < ARRAY_SIZE(unicam->node); i++) {
 			if (!unicam->node[i].streaming)
 				continue;
@@ -881,14 +1067,10 @@ static irqreturn_t unicam_isr(int irq, void *dev)
 		}
 	}
 
-	if (reg_read(unicam, UNICAM_ICTL) & UNICAM_FCM) {
-		/* Switch out of trigger mode if selected */
-		reg_write_field(unicam, UNICAM_ICTL, 1, UNICAM_TFC);
-		reg_write_field(unicam, UNICAM_ICTL, 0, UNICAM_FCM);
-	}
 	return IRQ_HANDLED;
 }
 
+/* V4L2 Common IOCTLs */
 static int unicam_querycap(struct file *file, void *priv,
 			   struct v4l2_capability *cap)
 {
@@ -906,6 +1088,38 @@ static int unicam_querycap(struct file *file, void *priv,
 	return 0;
 }
 
+static int unicam_log_status(struct file *file, void *fh)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	u32 reg;
+
+	/* status for sub devices */
+	v4l2_device_call_all(&dev->v4l2_dev, 0, core, log_status);
+
+	unicam_info(dev, "-----Receiver status-----\n");
+	unicam_info(dev, "V4L2 width/height:   %ux%u\n",
+		    node->v_fmt.fmt.pix.width, node->v_fmt.fmt.pix.height);
+	unicam_info(dev, "Mediabus format:     %08x\n", node->fmt->code);
+	unicam_info(dev, "V4L2 format:         %08x\n",
+		    node->v_fmt.fmt.pix.pixelformat);
+	reg = reg_read(dev, UNICAM_IPIPE);
+	unicam_info(dev, "Unpacking/packing:   %u / %u\n",
+		    get_field(reg, UNICAM_PUM_MASK),
+		    get_field(reg, UNICAM_PPM_MASK));
+	unicam_info(dev, "----Live data----\n");
+	unicam_info(dev, "Programmed stride:   %4u\n",
+		    reg_read(dev, UNICAM_IBLS));
+	unicam_info(dev, "Detected resolution: %ux%u\n",
+		    reg_read(dev, UNICAM_IHSTA),
+		    reg_read(dev, UNICAM_IVSTA));
+	unicam_info(dev, "Write pointer:       %08x\n",
+		    reg_read(dev, UNICAM_IBWP));
+
+	return 0;
+}
+
+/* V4L2 Video Centric IOCTLs */
 static int unicam_enum_fmt_vid_cap(struct file *file, void  *priv,
 				   struct v4l2_fmtdesc *f)
 {
@@ -1077,7 +1291,7 @@ static int unicam_try_fmt_vid_cap(struct file *file, void *priv,
 	 */
 	mbus_fmt->field = V4L2_FIELD_NONE;
 
-	ret = v4l2_subdev_call(dev->sensor, pad, set_fmt, dev->sensor_config,
+	ret = v4l2_subdev_call(dev->sensor, pad, set_fmt, dev->sensor_state,
 			       &sd_fmt);
 	if (ret && ret != -ENOIOCTLCMD && ret != -ENODEV)
 		return ret;
@@ -1099,7 +1313,7 @@ static int unicam_try_fmt_vid_cap(struct file *file, void *priv,
 			mbus_fmt->code = fmt->code;
 
 			ret = v4l2_subdev_call(dev->sensor, pad, set_fmt,
-					       dev->sensor_config, &sd_fmt);
+					       dev->sensor_state, &sd_fmt);
 			if (ret && ret != -ENOIOCTLCMD && ret != -ENODEV)
 				return ret;
 
@@ -1249,6 +1463,727 @@ static int unicam_g_fmt_meta_cap(struct file *file, void *priv,
 
 	return 0;
 }
+
+static int unicam_enum_input(struct file *file, void *priv,
+			     struct v4l2_input *inp)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	int ret;
+
+	if (inp->index != 0)
+		return -EINVAL;
+
+	inp->type = V4L2_INPUT_TYPE_CAMERA;
+	if (v4l2_subdev_has_op(dev->sensor, video, s_dv_timings)) {
+		inp->capabilities = V4L2_IN_CAP_DV_TIMINGS;
+		inp->std = 0;
+	} else if (v4l2_subdev_has_op(dev->sensor, video, s_std)) {
+		inp->capabilities = V4L2_IN_CAP_STD;
+		if (v4l2_subdev_call(dev->sensor, video, g_tvnorms, &inp->std) < 0)
+			inp->std = V4L2_STD_ALL;
+	} else {
+		inp->capabilities = 0;
+		inp->std = 0;
+	}
+
+	if (v4l2_subdev_has_op(dev->sensor, video, g_input_status)) {
+		ret = v4l2_subdev_call(dev->sensor, video, g_input_status,
+				       &inp->status);
+		if (ret < 0)
+			return ret;
+	}
+
+	snprintf(inp->name, sizeof(inp->name), "Camera 0");
+	return 0;
+}
+
+static int unicam_g_input(struct file *file, void *priv, unsigned int *i)
+{
+	*i = 0;
+
+	return 0;
+}
+
+static int unicam_s_input(struct file *file, void *priv, unsigned int i)
+{
+	/*
+	 * FIXME: Ideally we would like to be able to query the source
+	 * subdevice for information over the input connectors it supports,
+	 * and map that through in to a call to video_ops->s_routing.
+	 * There is no infrastructure support for defining that within
+	 * devicetree at present. Until that is implemented we can't
+	 * map a user physical connector number to s_routing input number.
+	 */
+	if (i > 0)
+		return -EINVAL;
+
+	return 0;
+}
+
+static int unicam_querystd(struct file *file, void *priv,
+			   v4l2_std_id *std)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+
+	return v4l2_subdev_call(dev->sensor, video, querystd, std);
+}
+
+static int unicam_g_std(struct file *file, void *priv, v4l2_std_id *std)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+
+	return v4l2_subdev_call(dev->sensor, video, g_std, std);
+}
+
+static int unicam_s_std(struct file *file, void *priv, v4l2_std_id std)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	int ret;
+	v4l2_std_id current_std;
+
+	ret = v4l2_subdev_call(dev->sensor, video, g_std, &current_std);
+	if (ret)
+		return ret;
+
+	if (std == current_std)
+		return 0;
+
+	if (vb2_is_busy(&node->buffer_queue))
+		return -EBUSY;
+
+	ret = v4l2_subdev_call(dev->sensor, video, s_std, std);
+
+	/* Force recomputation of bytesperline */
+	node->v_fmt.fmt.pix.bytesperline = 0;
+
+	unicam_reset_format(node);
+
+	return ret;
+}
+
+static int unicam_s_edid(struct file *file, void *priv, struct v4l2_edid *edid)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+
+	return v4l2_subdev_call(dev->sensor, pad, set_edid, edid);
+}
+
+static int unicam_g_edid(struct file *file, void *priv, struct v4l2_edid *edid)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+
+	return v4l2_subdev_call(dev->sensor, pad, get_edid, edid);
+}
+
+static int unicam_s_selection(struct file *file, void *priv,
+			      struct v4l2_selection *sel)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	struct v4l2_subdev_selection sdsel = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		.target = sel->target,
+		.flags = sel->flags,
+		.r = sel->r,
+	};
+
+	if (sel->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+
+	return v4l2_subdev_call(dev->sensor, pad, set_selection, NULL, &sdsel);
+}
+
+static int unicam_g_selection(struct file *file, void *priv,
+			      struct v4l2_selection *sel)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	struct v4l2_subdev_selection sdsel = {
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+		.target = sel->target,
+	};
+	int ret;
+
+	if (sel->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		return -EINVAL;
+
+	ret = v4l2_subdev_call(dev->sensor, pad, get_selection, NULL, &sdsel);
+	if (!ret)
+		sel->r = sdsel.r;
+
+	return ret;
+}
+
+static int unicam_enum_framesizes(struct file *file, void *priv,
+				  struct v4l2_frmsizeenum *fsize)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	const struct unicam_fmt *fmt;
+	struct v4l2_subdev_frame_size_enum fse;
+	int ret;
+
+	/* check for valid format */
+	fmt = find_format_by_pix(dev, fsize->pixel_format);
+	if (!fmt) {
+		unicam_dbg(3, dev, "Invalid pixel code: %x\n",
+			   fsize->pixel_format);
+		return -EINVAL;
+	}
+	fse.code = fmt->code;
+
+	fse.which = V4L2_SUBDEV_FORMAT_ACTIVE;
+	fse.index = fsize->index;
+	fse.pad = node->src_pad_id;
+
+	ret = v4l2_subdev_call(dev->sensor, pad, enum_frame_size, NULL, &fse);
+	if (ret)
+		return ret;
+
+	unicam_dbg(1, dev, "%s: index: %d code: %x W:[%d,%d] H:[%d,%d]\n",
+		   __func__, fse.index, fse.code, fse.min_width, fse.max_width,
+		   fse.min_height, fse.max_height);
+
+	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
+	fsize->discrete.width = fse.max_width;
+	fsize->discrete.height = fse.max_height;
+
+	return 0;
+}
+
+static int unicam_enum_frameintervals(struct file *file, void *priv,
+				      struct v4l2_frmivalenum *fival)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	const struct unicam_fmt *fmt;
+	struct v4l2_subdev_frame_interval_enum fie = {
+		.index = fival->index,
+		.pad = node->src_pad_id,
+		.width = fival->width,
+		.height = fival->height,
+		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
+	};
+	int ret;
+
+	fmt = find_format_by_pix(dev, fival->pixel_format);
+	if (!fmt)
+		return -EINVAL;
+
+	fie.code = fmt->code;
+	ret = v4l2_subdev_call(dev->sensor, pad, enum_frame_interval,
+			       NULL, &fie);
+	if (ret)
+		return ret;
+
+	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
+	fival->discrete = fie.interval;
+
+	return 0;
+}
+
+static int unicam_g_parm(struct file *file, void *fh, struct v4l2_streamparm *a)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+
+	return v4l2_g_parm_cap(video_devdata(file), dev->sensor, a);
+}
+
+static int unicam_s_parm(struct file *file, void *fh, struct v4l2_streamparm *a)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+
+	return v4l2_s_parm_cap(video_devdata(file), dev->sensor, a);
+}
+
+static int unicam_g_dv_timings(struct file *file, void *priv,
+			       struct v4l2_dv_timings *timings)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+
+	return v4l2_subdev_call(dev->sensor, video, g_dv_timings, timings);
+}
+
+static int unicam_s_dv_timings(struct file *file, void *priv,
+			       struct v4l2_dv_timings *timings)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	struct v4l2_dv_timings current_timings;
+	int ret;
+
+	ret = v4l2_subdev_call(dev->sensor, video, g_dv_timings,
+			       &current_timings);
+
+	if (ret < 0)
+		return ret;
+
+	if (v4l2_match_dv_timings(timings, &current_timings, 0, false))
+		return 0;
+
+	if (vb2_is_busy(&node->buffer_queue))
+		return -EBUSY;
+
+	ret = v4l2_subdev_call(dev->sensor, video, s_dv_timings, timings);
+
+	/* Force recomputation of bytesperline */
+	node->v_fmt.fmt.pix.bytesperline = 0;
+
+	unicam_reset_format(node);
+
+	return ret;
+}
+
+static int unicam_query_dv_timings(struct file *file, void *priv,
+				   struct v4l2_dv_timings *timings)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+
+	return v4l2_subdev_call(dev->sensor, video, query_dv_timings, timings);
+}
+
+static int unicam_enum_dv_timings(struct file *file, void *priv,
+				  struct v4l2_enum_dv_timings *timings)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	int ret;
+
+	timings->pad = node->src_pad_id;
+	ret = v4l2_subdev_call(dev->sensor, pad, enum_dv_timings, timings);
+	timings->pad = node->pad_id;
+
+	return ret;
+}
+
+static int unicam_dv_timings_cap(struct file *file, void *priv,
+				 struct v4l2_dv_timings_cap *cap)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	int ret;
+
+	cap->pad = node->src_pad_id;
+	ret = v4l2_subdev_call(dev->sensor, pad, dv_timings_cap, cap);
+	cap->pad = node->pad_id;
+
+	return ret;
+}
+
+static int unicam_subscribe_event(struct v4l2_fh *fh,
+				  const struct v4l2_event_subscription *sub)
+{
+	switch (sub->type) {
+	case V4L2_EVENT_FRAME_SYNC:
+		return v4l2_event_subscribe(fh, sub, 2, NULL);
+	case V4L2_EVENT_SOURCE_CHANGE:
+		return v4l2_event_subscribe(fh, sub, 4, NULL);
+	}
+
+	return v4l2_ctrl_subscribe_event(fh, sub);
+}
+
+static void unicam_notify(struct v4l2_subdev *sd,
+			  unsigned int notification, void *arg)
+{
+	struct unicam_device *dev = to_unicam_device(sd->v4l2_dev);
+
+	switch (notification) {
+	case V4L2_DEVICE_NOTIFY_EVENT:
+		v4l2_event_queue(&dev->node[IMAGE_PAD].video_dev, arg);
+		break;
+	default:
+		break;
+	}
+}
+
+/* unicam capture ioctl operations */
+static const struct v4l2_ioctl_ops unicam_ioctl_ops = {
+	.vidioc_querycap		= unicam_querycap,
+	.vidioc_enum_fmt_vid_cap	= unicam_enum_fmt_vid_cap,
+	.vidioc_g_fmt_vid_cap		= unicam_g_fmt_vid_cap,
+	.vidioc_s_fmt_vid_cap		= unicam_s_fmt_vid_cap,
+	.vidioc_try_fmt_vid_cap		= unicam_try_fmt_vid_cap,
+
+	.vidioc_enum_fmt_meta_cap	= unicam_enum_fmt_meta_cap,
+	.vidioc_g_fmt_meta_cap		= unicam_g_fmt_meta_cap,
+	.vidioc_s_fmt_meta_cap		= unicam_g_fmt_meta_cap,
+	.vidioc_try_fmt_meta_cap	= unicam_g_fmt_meta_cap,
+
+	.vidioc_enum_input		= unicam_enum_input,
+	.vidioc_g_input			= unicam_g_input,
+	.vidioc_s_input			= unicam_s_input,
+
+	.vidioc_querystd		= unicam_querystd,
+	.vidioc_s_std			= unicam_s_std,
+	.vidioc_g_std			= unicam_g_std,
+
+	.vidioc_g_edid			= unicam_g_edid,
+	.vidioc_s_edid			= unicam_s_edid,
+
+	.vidioc_enum_framesizes		= unicam_enum_framesizes,
+	.vidioc_enum_frameintervals	= unicam_enum_frameintervals,
+
+	.vidioc_g_selection		= unicam_g_selection,
+	.vidioc_s_selection		= unicam_s_selection,
+
+	.vidioc_g_parm			= unicam_g_parm,
+	.vidioc_s_parm			= unicam_s_parm,
+
+	.vidioc_s_dv_timings		= unicam_s_dv_timings,
+	.vidioc_g_dv_timings		= unicam_g_dv_timings,
+	.vidioc_query_dv_timings	= unicam_query_dv_timings,
+	.vidioc_enum_dv_timings		= unicam_enum_dv_timings,
+	.vidioc_dv_timings_cap		= unicam_dv_timings_cap,
+
+	.vidioc_reqbufs			= vb2_ioctl_reqbufs,
+	.vidioc_create_bufs		= vb2_ioctl_create_bufs,
+	.vidioc_prepare_buf		= vb2_ioctl_prepare_buf,
+	.vidioc_querybuf		= vb2_ioctl_querybuf,
+	.vidioc_qbuf			= vb2_ioctl_qbuf,
+	.vidioc_dqbuf			= vb2_ioctl_dqbuf,
+	.vidioc_expbuf			= vb2_ioctl_expbuf,
+	.vidioc_streamon		= vb2_ioctl_streamon,
+	.vidioc_streamoff		= vb2_ioctl_streamoff,
+
+	.vidioc_log_status		= unicam_log_status,
+	.vidioc_subscribe_event		= unicam_subscribe_event,
+	.vidioc_unsubscribe_event	= v4l2_event_unsubscribe,
+};
+
+/* V4L2 Media Controller Centric IOCTLs */
+
+static int unicam_mc_enum_fmt_vid_cap(struct file *file, void  *priv,
+				      struct v4l2_fmtdesc *f)
+{
+	int i, j;
+
+	for (i = 0, j = 0; i < ARRAY_SIZE(formats); i++) {
+		if (f->mbus_code && formats[i].code != f->mbus_code)
+			continue;
+		if (formats[i].mc_skip || formats[i].metadata_fmt)
+			continue;
+
+		if (formats[i].fourcc) {
+			if (j == f->index) {
+				f->pixelformat = formats[i].fourcc;
+				f->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+				return 0;
+			}
+			j++;
+		}
+		if (formats[i].repacked_fourcc) {
+			if (j == f->index) {
+				f->pixelformat = formats[i].repacked_fourcc;
+				f->type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+				return 0;
+			}
+			j++;
+		}
+	}
+
+	return -EINVAL;
+}
+
+static int unicam_mc_g_fmt_vid_cap(struct file *file, void *priv,
+				   struct v4l2_format *f)
+{
+	struct unicam_node *node = video_drvdata(file);
+
+	if (node->pad_id != IMAGE_PAD)
+		return -EINVAL;
+
+	*f = node->v_fmt;
+
+	return 0;
+}
+
+static void unicam_mc_try_fmt(struct unicam_node *node, struct v4l2_format *f,
+			      const struct unicam_fmt **ret_fmt)
+{
+	struct v4l2_pix_format *v4l2_format = &f->fmt.pix;
+	struct unicam_device *dev = node->dev;
+	const struct unicam_fmt *fmt;
+	int is_rgb;
+
+	/*
+	 * Default to the first format if the requested pixel format code isn't
+	 * supported.
+	 */
+	fmt = find_format_by_pix(dev, v4l2_format->pixelformat);
+	if (!fmt) {
+		fmt = &formats[0];
+		v4l2_format->pixelformat = fmt->fourcc;
+	}
+
+	unicam_calc_format_size_bpl(dev, fmt, f);
+
+	if (v4l2_format->field == V4L2_FIELD_ANY)
+		v4l2_format->field = V4L2_FIELD_NONE;
+
+	if (ret_fmt)
+		*ret_fmt = fmt;
+
+	if (v4l2_format->colorspace >= MAX_COLORSPACE ||
+	    !(fmt->valid_colorspaces & (1 << v4l2_format->colorspace))) {
+		v4l2_format->colorspace = __ffs(fmt->valid_colorspaces);
+
+		v4l2_format->xfer_func =
+			V4L2_MAP_XFER_FUNC_DEFAULT(v4l2_format->colorspace);
+		v4l2_format->ycbcr_enc =
+			V4L2_MAP_YCBCR_ENC_DEFAULT(v4l2_format->colorspace);
+		is_rgb = v4l2_format->colorspace == V4L2_COLORSPACE_SRGB;
+		v4l2_format->quantization =
+			V4L2_MAP_QUANTIZATION_DEFAULT(is_rgb,
+						      v4l2_format->colorspace,
+						      v4l2_format->ycbcr_enc);
+	}
+
+	unicam_dbg(3, dev, "%s: %08x %ux%u (bytesperline %u sizeimage %u)\n",
+		   __func__, v4l2_format->pixelformat,
+		   v4l2_format->width, v4l2_format->height,
+		   v4l2_format->bytesperline, v4l2_format->sizeimage);
+}
+
+static int unicam_mc_try_fmt_vid_cap(struct file *file, void *priv,
+				     struct v4l2_format *f)
+{
+	struct unicam_node *node = video_drvdata(file);
+
+	unicam_mc_try_fmt(node, f, NULL);
+	return 0;
+}
+
+static int unicam_mc_s_fmt_vid_cap(struct file *file, void *priv,
+				   struct v4l2_format *f)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+	const struct unicam_fmt *fmt;
+
+	if (vb2_is_busy(&node->buffer_queue)) {
+		unicam_dbg(3, dev, "%s device busy\n", __func__);
+		return -EBUSY;
+	}
+
+	unicam_mc_try_fmt(node, f, &fmt);
+
+	node->v_fmt = *f;
+	node->fmt = fmt;
+
+	return 0;
+}
+
+static int unicam_mc_enum_framesizes(struct file *file, void *fh,
+				     struct v4l2_frmsizeenum *fsize)
+{
+	struct unicam_node *node = video_drvdata(file);
+	struct unicam_device *dev = node->dev;
+
+	if (fsize->index > 0)
+		return -EINVAL;
+
+	if (!find_format_by_pix(dev, fsize->pixel_format)) {
+		unicam_dbg(3, dev, "Invalid pixel format 0x%08x\n",
+			   fsize->pixel_format);
+		return -EINVAL;
+	}
+
+	fsize->type = V4L2_FRMSIZE_TYPE_STEPWISE;
+	fsize->stepwise.min_width = MIN_WIDTH;
+	fsize->stepwise.max_width = MAX_WIDTH;
+	fsize->stepwise.step_width = 1;
+	fsize->stepwise.min_height = MIN_HEIGHT;
+	fsize->stepwise.max_height = MAX_HEIGHT;
+	fsize->stepwise.step_height = 1;
+
+	return 0;
+}
+
+static int unicam_mc_enum_fmt_meta_cap(struct file *file, void  *priv,
+				       struct v4l2_fmtdesc *f)
+{
+	int i, j;
+
+	for (i = 0, j = 0; i < ARRAY_SIZE(formats); i++) {
+		if (f->mbus_code && formats[i].code != f->mbus_code)
+			continue;
+		if (!formats[i].metadata_fmt)
+			continue;
+
+		if (formats[i].fourcc) {
+			if (j == f->index) {
+				f->pixelformat = formats[i].fourcc;
+				f->type = V4L2_BUF_TYPE_META_CAPTURE;
+				return 0;
+			}
+			j++;
+		}
+	}
+
+	return -EINVAL;
+}
+
+static int unicam_mc_g_fmt_meta_cap(struct file *file, void *priv,
+				    struct v4l2_format *f)
+{
+	struct unicam_node *node = video_drvdata(file);
+
+	if (node->pad_id != METADATA_PAD)
+		return -EINVAL;
+
+	*f = node->v_fmt;
+
+	return 0;
+}
+
+static int unicam_mc_try_fmt_meta_cap(struct file *file, void *priv,
+				      struct v4l2_format *f)
+{
+	struct unicam_node *node = video_drvdata(file);
+
+	if (node->pad_id != METADATA_PAD)
+		return -EINVAL;
+
+	f->fmt.meta.dataformat = V4L2_META_FMT_SENSOR_DATA;
+
+	return 0;
+}
+
+static int unicam_mc_s_fmt_meta_cap(struct file *file, void *priv,
+				    struct v4l2_format *f)
+{
+	struct unicam_node *node = video_drvdata(file);
+
+	if (node->pad_id != METADATA_PAD)
+		return -EINVAL;
+
+	unicam_mc_try_fmt_meta_cap(file, priv, f);
+
+	node->v_fmt = *f;
+
+	return 0;
+}
+
+static const struct v4l2_ioctl_ops unicam_mc_ioctl_ops = {
+	.vidioc_querycap      = unicam_querycap,
+	.vidioc_enum_fmt_vid_cap  = unicam_mc_enum_fmt_vid_cap,
+	.vidioc_g_fmt_vid_cap     = unicam_mc_g_fmt_vid_cap,
+	.vidioc_try_fmt_vid_cap   = unicam_mc_try_fmt_vid_cap,
+	.vidioc_s_fmt_vid_cap     = unicam_mc_s_fmt_vid_cap,
+
+	.vidioc_enum_fmt_meta_cap	= unicam_mc_enum_fmt_meta_cap,
+	.vidioc_g_fmt_meta_cap		= unicam_mc_g_fmt_meta_cap,
+	.vidioc_try_fmt_meta_cap	= unicam_mc_try_fmt_meta_cap,
+	.vidioc_s_fmt_meta_cap		= unicam_mc_s_fmt_meta_cap,
+
+	.vidioc_enum_framesizes   = unicam_mc_enum_framesizes,
+	.vidioc_reqbufs       = vb2_ioctl_reqbufs,
+	.vidioc_create_bufs   = vb2_ioctl_create_bufs,
+	.vidioc_prepare_buf   = vb2_ioctl_prepare_buf,
+	.vidioc_querybuf      = vb2_ioctl_querybuf,
+	.vidioc_qbuf          = vb2_ioctl_qbuf,
+	.vidioc_dqbuf         = vb2_ioctl_dqbuf,
+	.vidioc_expbuf        = vb2_ioctl_expbuf,
+	.vidioc_streamon      = vb2_ioctl_streamon,
+	.vidioc_streamoff     = vb2_ioctl_streamoff,
+
+	.vidioc_log_status		= unicam_log_status,
+	.vidioc_subscribe_event		= unicam_subscribe_event,
+	.vidioc_unsubscribe_event	= v4l2_event_unsubscribe,
+};
+
+static int
+unicam_mc_subdev_link_validate_get_format(struct media_pad *pad,
+					  struct v4l2_subdev_format *fmt)
+{
+	if (is_media_entity_v4l2_subdev(pad->entity)) {
+		struct v4l2_subdev *sd =
+			media_entity_to_v4l2_subdev(pad->entity);
+
+		fmt->which = V4L2_SUBDEV_FORMAT_ACTIVE;
+		fmt->pad = pad->index;
+		return v4l2_subdev_call(sd, pad, get_fmt, NULL, fmt);
+	}
+
+	return -EINVAL;
+}
+
+static int unicam_mc_video_link_validate(struct media_link *link)
+{
+	struct video_device *vd = container_of(link->sink->entity,
+						struct video_device, entity);
+	struct unicam_node *node = container_of(vd, struct unicam_node,
+						video_dev);
+	struct unicam_device *unicam = node->dev;
+	struct v4l2_subdev_format source_fmt;
+	int ret;
+
+	if (!media_entity_remote_source_pad_unique(link->sink->entity)) {
+		unicam_dbg(1, unicam,
+			   "video node %s pad not connected\n", vd->name);
+		return -ENOTCONN;
+	}
+
+	ret = unicam_mc_subdev_link_validate_get_format(link->source,
+							&source_fmt);
+	if (ret < 0)
+		return 0;
+
+	if (node->pad_id == IMAGE_PAD) {
+		struct v4l2_pix_format *pix_fmt = &node->v_fmt.fmt.pix;
+		const struct unicam_fmt *fmt;
+
+		if (source_fmt.format.width != pix_fmt->width ||
+		    source_fmt.format.height != pix_fmt->height) {
+			unicam_err(unicam,
+				   "Wrong width or height %ux%u (remote pad set to %ux%u)\n",
+				   pix_fmt->width, pix_fmt->height,
+				   source_fmt.format.width,
+				   source_fmt.format.height);
+			return -EINVAL;
+		}
+
+		fmt = find_format_by_code(source_fmt.format.code);
+
+		if (!fmt || (fmt->fourcc != pix_fmt->pixelformat &&
+			     fmt->repacked_fourcc != pix_fmt->pixelformat))
+			return -EINVAL;
+	} else {
+		struct v4l2_meta_format *meta_fmt = &node->v_fmt.fmt.meta;
+
+		if (source_fmt.format.width != meta_fmt->buffersize ||
+		    source_fmt.format.height != 1 ||
+		    source_fmt.format.code != MEDIA_BUS_FMT_SENSOR_DATA) {
+			unicam_err(unicam,
+				   "Wrong metadata width/height/code %ux%u %08x (remote pad set to %ux%u %08x)\n",
+				   meta_fmt->buffersize, 1,
+				   MEDIA_BUS_FMT_SENSOR_DATA,
+				   source_fmt.format.width,
+				   source_fmt.format.height,
+				   source_fmt.format.code);
+			return -EINVAL;
+		}
+	}
+
+	return 0;
+}
+
+static const struct media_entity_operations unicam_mc_entity_ops = {
+	.link_validate = unicam_mc_video_link_validate,
+};
+
+/* videobuf2 Operations */
 
 static int unicam_queue_setup(struct vb2_queue *vq,
 			      unsigned int *nbuffers,
@@ -1441,8 +2376,7 @@ static void unicam_start_rx(struct unicam_device *dev, dma_addr_t *addr)
 
 	reg_write_field(dev, UNICAM_ANA, 0, UNICAM_DDL);
 
-	/* Always start in trigger frame capture mode (UNICAM_FCM set) */
-	val = UNICAM_FSIE | UNICAM_FEIE | UNICAM_FCM | UNICAM_IBOB;
+	val = UNICAM_FSIE | UNICAM_FEIE | UNICAM_IBOB;
 	set_field(&val, line_int_freq, UNICAM_LCIE_MASK);
 	reg_write(dev, UNICAM_ICTL, val);
 	reg_write(dev, UNICAM_STA, UNICAM_STA_MASK_ALL);
@@ -1476,7 +2410,7 @@ static void unicam_start_rx(struct unicam_device *dev, dma_addr_t *addr)
 		/* CSI2 */
 		set_field(&val, 1, UNICAM_CLE);
 		set_field(&val, 1, UNICAM_CLLPE);
-		if (dev->bus_flags & V4L2_MBUS_CSI2_CONTINUOUS_CLOCK) {
+		if (!(dev->bus_flags & V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK)) {
 			set_field(&val, 1, UNICAM_CLTRE);
 			set_field(&val, 1, UNICAM_CLHSE);
 		}
@@ -1498,7 +2432,7 @@ static void unicam_start_rx(struct unicam_device *dev, dma_addr_t *addr)
 		/* CSI2 */
 		set_field(&val, 1, UNICAM_DLE);
 		set_field(&val, 1, UNICAM_DLLPE);
-		if (dev->bus_flags & V4L2_MBUS_CSI2_CONTINUOUS_CLOCK) {
+		if (!(dev->bus_flags & V4L2_MBUS_CSI2_NONCONTINUOUS_CLOCK)) {
 			set_field(&val, 1, UNICAM_DLTRE);
 			set_field(&val, 1, UNICAM_DLHSE);
 		}
@@ -1555,12 +2489,6 @@ static void unicam_start_rx(struct unicam_device *dev, dma_addr_t *addr)
 	/* Load embedded data buffer pointers if needed */
 	if (dev->node[METADATA_PAD].streaming && dev->sensor_embedded_data)
 		reg_write_field(dev, UNICAM_DCS, 1, UNICAM_LDP);
-
-	/*
-	 * Enable trigger only for the first frame to
-	 * sync correctly to the FS from the source.
-	 */
-	reg_write_field(dev, UNICAM_ICTL, 1, UNICAM_TFC);
 }
 
 static void unicam_disable(struct unicam_device *dev)
@@ -1647,6 +2575,13 @@ static int unicam_start_streaming(struct vb2_queue *vq, unsigned int count)
 		goto err_streaming;
 	}
 
+	ret = media_pipeline_start(dev->node[IMAGE_PAD].video_dev.entity.pads,
+				   &dev->node[IMAGE_PAD].pipe);
+	if (ret < 0) {
+		unicam_err(dev, "Failed to start media pipeline: %d\n", ret);
+		goto err_pm_put;
+	}
+
 	dev->active_data_lanes = dev->max_data_lanes;
 
 	if (dev->bus_type == V4L2_MBUS_CSI2_DPHY) {
@@ -1656,12 +2591,10 @@ static int unicam_start_streaming(struct vb2_queue *vq, unsigned int count)
 				       0, &mbus_config);
 		if (ret < 0 && ret != -ENOIOCTLCMD) {
 			unicam_dbg(3, dev, "g_mbus_config failed\n");
-			goto err_pm_put;
+			goto error_pipeline;
 		}
 
-		dev->active_data_lanes =
-			(mbus_config.flags & V4L2_MBUS_CSI2_LANE_MASK) >>
-					__ffs(V4L2_MBUS_CSI2_LANE_MASK);
+		dev->active_data_lanes = mbus_config.bus.mipi_csi2.num_data_lanes;
 		if (!dev->active_data_lanes)
 			dev->active_data_lanes = dev->max_data_lanes;
 		if (dev->active_data_lanes > dev->max_data_lanes) {
@@ -1669,7 +2602,7 @@ static int unicam_start_streaming(struct vb2_queue *vq, unsigned int count)
 				   dev->active_data_lanes,
 				   dev->max_data_lanes);
 			ret = -EINVAL;
-			goto err_pm_put;
+			goto error_pipeline;
 		}
 	}
 
@@ -1679,13 +2612,13 @@ static int unicam_start_streaming(struct vb2_queue *vq, unsigned int count)
 	ret = clk_set_min_rate(dev->vpu_clock, MIN_VPU_CLOCK_RATE);
 	if (ret) {
 		unicam_err(dev, "failed to set up VPU clock\n");
-		goto err_pm_put;
+		goto error_pipeline;
 	}
 
 	ret = clk_prepare_enable(dev->vpu_clock);
 	if (ret) {
 		unicam_err(dev, "Failed to enable VPU clock: %d\n", ret);
-		goto err_pm_put;
+		goto error_pipeline;
 	}
 
 	ret = clk_set_rate(dev->clock, 100 * 1000 * 1000);
@@ -1718,6 +2651,7 @@ static int unicam_start_streaming(struct vb2_queue *vq, unsigned int count)
 			vb2_dma_contig_plane_dma_addr(&buf->vb.vb2_buf, 0);
 	}
 
+	dev->frame_started = false;
 	unicam_start_rx(dev, buffer_addr);
 
 	ret = v4l2_subdev_call(dev->sensor, video, s_stream, 1);
@@ -1736,6 +2670,9 @@ err_vpu_clock:
 	if (clk_set_min_rate(dev->vpu_clock, 0))
 		unicam_err(dev, "failed to reset the VPU clock\n");
 	clk_disable_unprepare(dev->vpu_clock);
+error_pipeline:
+	if (node->pad_id == IMAGE_PAD)
+		media_pipeline_stop(dev->node[IMAGE_PAD].video_dev.entity.pads);
 err_pm_put:
 	unicam_runtime_put(dev);
 err_streaming:
@@ -1763,6 +2700,8 @@ static void unicam_stop_streaming(struct vb2_queue *vq)
 
 		unicam_disable(dev);
 
+		media_pipeline_stop(node->video_dev.entity.pads);
+
 		if (dev->clocks_enabled) {
 			if (clk_set_min_rate(dev->vpu_clock, 0))
 				unicam_err(dev, "failed to reset the min VPU clock\n");
@@ -1779,367 +2718,14 @@ static void unicam_stop_streaming(struct vb2_queue *vq)
 		 * This is only really needed if the embedded data pad is
 		 * disabled before the image pad.
 		 */
-		unicam_wr_dma_addr(dev, node->dummy_buf_dma_addr,
-				   DUMMY_BUF_SIZE, METADATA_PAD);
+		unicam_wr_dma_addr(dev, node->dummy_buf_dma_addr, 0,
+				   METADATA_PAD);
 	}
 
 	/* Clear all queued buffers for the node */
 	unicam_return_buffers(node, VB2_BUF_STATE_ERROR);
 }
 
-static int unicam_enum_input(struct file *file, void *priv,
-			     struct v4l2_input *inp)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	if (inp->index != 0)
-		return -EINVAL;
-
-	inp->type = V4L2_INPUT_TYPE_CAMERA;
-	if (v4l2_subdev_has_op(dev->sensor, video, s_dv_timings)) {
-		inp->capabilities = V4L2_IN_CAP_DV_TIMINGS;
-		inp->std = 0;
-	} else if (v4l2_subdev_has_op(dev->sensor, video, s_std)) {
-		inp->capabilities = V4L2_IN_CAP_STD;
-		if (v4l2_subdev_call(dev->sensor, video, g_tvnorms, &inp->std) < 0)
-			inp->std = V4L2_STD_ALL;
-	} else {
-		inp->capabilities = 0;
-		inp->std = 0;
-	}
-	snprintf(inp->name, sizeof(inp->name), "Camera 0");
-	return 0;
-}
-
-static int unicam_g_input(struct file *file, void *priv, unsigned int *i)
-{
-	*i = 0;
-
-	return 0;
-}
-
-static int unicam_s_input(struct file *file, void *priv, unsigned int i)
-{
-	/*
-	 * FIXME: Ideally we would like to be able to query the source
-	 * subdevice for information over the input connectors it supports,
-	 * and map that through in to a call to video_ops->s_routing.
-	 * There is no infrastructure support for defining that within
-	 * devicetree at present. Until that is implemented we can't
-	 * map a user physical connector number to s_routing input number.
-	 */
-	if (i > 0)
-		return -EINVAL;
-
-	return 0;
-}
-
-static int unicam_querystd(struct file *file, void *priv,
-			   v4l2_std_id *std)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	return v4l2_subdev_call(dev->sensor, video, querystd, std);
-}
-
-static int unicam_g_std(struct file *file, void *priv, v4l2_std_id *std)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	return v4l2_subdev_call(dev->sensor, video, g_std, std);
-}
-
-static int unicam_s_std(struct file *file, void *priv, v4l2_std_id std)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-	int ret;
-	v4l2_std_id current_std;
-
-	ret = v4l2_subdev_call(dev->sensor, video, g_std, &current_std);
-	if (ret)
-		return ret;
-
-	if (std == current_std)
-		return 0;
-
-	if (vb2_is_busy(&node->buffer_queue))
-		return -EBUSY;
-
-	ret = v4l2_subdev_call(dev->sensor, video, s_std, std);
-
-	/* Force recomputation of bytesperline */
-	node->v_fmt.fmt.pix.bytesperline = 0;
-
-	unicam_reset_format(node);
-
-	return ret;
-}
-
-static int unicam_s_edid(struct file *file, void *priv, struct v4l2_edid *edid)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	return v4l2_subdev_call(dev->sensor, pad, set_edid, edid);
-}
-
-static int unicam_g_edid(struct file *file, void *priv, struct v4l2_edid *edid)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	return v4l2_subdev_call(dev->sensor, pad, get_edid, edid);
-}
-
-static int unicam_s_selection(struct file *file, void *priv,
-			      struct v4l2_selection *sel)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-	struct v4l2_subdev_selection sdsel = {
-		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
-		.target = sel->target,
-		.flags = sel->flags,
-		.r = sel->r,
-	};
-
-	if (sel->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-		return -EINVAL;
-
-	return v4l2_subdev_call(dev->sensor, pad, set_selection, NULL, &sdsel);
-}
-
-static int unicam_g_selection(struct file *file, void *priv,
-			      struct v4l2_selection *sel)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-	struct v4l2_subdev_selection sdsel = {
-		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
-		.target = sel->target,
-	};
-	int ret;
-
-	if (sel->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
-		return -EINVAL;
-
-	ret = v4l2_subdev_call(dev->sensor, pad, get_selection, NULL, &sdsel);
-	if (!ret)
-		sel->r = sdsel.r;
-
-	return ret;
-}
-
-static int unicam_enum_framesizes(struct file *file, void *priv,
-				  struct v4l2_frmsizeenum *fsize)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-	const struct unicam_fmt *fmt;
-	struct v4l2_subdev_frame_size_enum fse;
-	int ret;
-
-	/* check for valid format */
-	fmt = find_format_by_pix(dev, fsize->pixel_format);
-	if (!fmt) {
-		unicam_dbg(3, dev, "Invalid pixel code: %x\n",
-			   fsize->pixel_format);
-		return -EINVAL;
-	}
-	fse.code = fmt->code;
-
-	fse.which = V4L2_SUBDEV_FORMAT_ACTIVE;
-	fse.index = fsize->index;
-	fse.pad = node->pad_id;
-
-	ret = v4l2_subdev_call(dev->sensor, pad, enum_frame_size, NULL, &fse);
-	if (ret)
-		return ret;
-
-	unicam_dbg(1, dev, "%s: index: %d code: %x W:[%d,%d] H:[%d,%d]\n",
-		   __func__, fse.index, fse.code, fse.min_width, fse.max_width,
-		   fse.min_height, fse.max_height);
-
-	fsize->type = V4L2_FRMSIZE_TYPE_DISCRETE;
-	fsize->discrete.width = fse.max_width;
-	fsize->discrete.height = fse.max_height;
-
-	return 0;
-}
-
-static int unicam_enum_frameintervals(struct file *file, void *priv,
-				      struct v4l2_frmivalenum *fival)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-	const struct unicam_fmt *fmt;
-	struct v4l2_subdev_frame_interval_enum fie = {
-		.index = fival->index,
-		.width = fival->width,
-		.height = fival->height,
-		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
-	};
-	int ret;
-
-	fmt = find_format_by_pix(dev, fival->pixel_format);
-	if (!fmt)
-		return -EINVAL;
-
-	fie.code = fmt->code;
-	ret = v4l2_subdev_call(dev->sensor, pad, enum_frame_interval,
-			       NULL, &fie);
-	if (ret)
-		return ret;
-
-	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
-	fival->discrete = fie.interval;
-
-	return 0;
-}
-
-static int unicam_g_parm(struct file *file, void *fh, struct v4l2_streamparm *a)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	return v4l2_g_parm_cap(video_devdata(file), dev->sensor, a);
-}
-
-static int unicam_s_parm(struct file *file, void *fh, struct v4l2_streamparm *a)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	return v4l2_s_parm_cap(video_devdata(file), dev->sensor, a);
-}
-
-static int unicam_g_dv_timings(struct file *file, void *priv,
-			       struct v4l2_dv_timings *timings)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	return v4l2_subdev_call(dev->sensor, video, g_dv_timings, timings);
-}
-
-static int unicam_s_dv_timings(struct file *file, void *priv,
-			       struct v4l2_dv_timings *timings)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-	struct v4l2_dv_timings current_timings;
-	int ret;
-
-	ret = v4l2_subdev_call(dev->sensor, video, g_dv_timings,
-			       &current_timings);
-
-	if (ret < 0)
-		return ret;
-
-	if (v4l2_match_dv_timings(timings, &current_timings, 0, false))
-		return 0;
-
-	if (vb2_is_busy(&node->buffer_queue))
-		return -EBUSY;
-
-	ret = v4l2_subdev_call(dev->sensor, video, s_dv_timings, timings);
-
-	/* Force recomputation of bytesperline */
-	node->v_fmt.fmt.pix.bytesperline = 0;
-
-	unicam_reset_format(node);
-
-	return ret;
-}
-
-static int unicam_query_dv_timings(struct file *file, void *priv,
-				   struct v4l2_dv_timings *timings)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	return v4l2_subdev_call(dev->sensor, video, query_dv_timings, timings);
-}
-
-static int unicam_enum_dv_timings(struct file *file, void *priv,
-				  struct v4l2_enum_dv_timings *timings)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	return v4l2_subdev_call(dev->sensor, pad, enum_dv_timings, timings);
-}
-
-static int unicam_dv_timings_cap(struct file *file, void *priv,
-				 struct v4l2_dv_timings_cap *cap)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-
-	return v4l2_subdev_call(dev->sensor, pad, dv_timings_cap, cap);
-}
-
-static int unicam_subscribe_event(struct v4l2_fh *fh,
-				  const struct v4l2_event_subscription *sub)
-{
-	switch (sub->type) {
-	case V4L2_EVENT_FRAME_SYNC:
-		return v4l2_event_subscribe(fh, sub, 2, NULL);
-	case V4L2_EVENT_SOURCE_CHANGE:
-		return v4l2_event_subscribe(fh, sub, 4, NULL);
-	}
-
-	return v4l2_ctrl_subscribe_event(fh, sub);
-}
-
-static int unicam_log_status(struct file *file, void *fh)
-{
-	struct unicam_node *node = video_drvdata(file);
-	struct unicam_device *dev = node->dev;
-	u32 reg;
-
-	/* status for sub devices */
-	v4l2_device_call_all(&dev->v4l2_dev, 0, core, log_status);
-
-	unicam_info(dev, "-----Receiver status-----\n");
-	unicam_info(dev, "V4L2 width/height:   %ux%u\n",
-		    node->v_fmt.fmt.pix.width, node->v_fmt.fmt.pix.height);
-	unicam_info(dev, "Mediabus format:     %08x\n", node->fmt->code);
-	unicam_info(dev, "V4L2 format:         %08x\n",
-		    node->v_fmt.fmt.pix.pixelformat);
-	reg = reg_read(dev, UNICAM_IPIPE);
-	unicam_info(dev, "Unpacking/packing:   %u / %u\n",
-		    get_field(reg, UNICAM_PUM_MASK),
-		    get_field(reg, UNICAM_PPM_MASK));
-	unicam_info(dev, "----Live data----\n");
-	unicam_info(dev, "Programmed stride:   %4u\n",
-		    reg_read(dev, UNICAM_IBLS));
-	unicam_info(dev, "Detected resolution: %ux%u\n",
-		    reg_read(dev, UNICAM_IHSTA),
-		    reg_read(dev, UNICAM_IVSTA));
-	unicam_info(dev, "Write pointer:       %08x\n",
-		    reg_read(dev, UNICAM_IBWP));
-
-	return 0;
-}
-
-static void unicam_notify(struct v4l2_subdev *sd,
-			  unsigned int notification, void *arg)
-{
-	struct unicam_device *dev = to_unicam_device(sd->v4l2_dev);
-
-	switch (notification) {
-	case V4L2_DEVICE_NOTIFY_EVENT:
-		v4l2_event_queue(&dev->node[IMAGE_PAD].video_dev, arg);
-		break;
-	default:
-		break;
-	}
-}
 
 static const struct vb2_ops unicam_video_qops = {
 	.wait_prepare		= vb2_ops_wait_prepare,
@@ -2222,64 +2808,10 @@ static const struct v4l2_file_operations unicam_fops = {
 	.mmap		= vb2_fop_mmap,
 };
 
-/* unicam capture ioctl operations */
-static const struct v4l2_ioctl_ops unicam_ioctl_ops = {
-	.vidioc_querycap		= unicam_querycap,
-	.vidioc_enum_fmt_vid_cap	= unicam_enum_fmt_vid_cap,
-	.vidioc_g_fmt_vid_cap		= unicam_g_fmt_vid_cap,
-	.vidioc_s_fmt_vid_cap		= unicam_s_fmt_vid_cap,
-	.vidioc_try_fmt_vid_cap		= unicam_try_fmt_vid_cap,
-
-	.vidioc_enum_fmt_meta_cap	= unicam_enum_fmt_meta_cap,
-	.vidioc_g_fmt_meta_cap		= unicam_g_fmt_meta_cap,
-	.vidioc_s_fmt_meta_cap		= unicam_g_fmt_meta_cap,
-	.vidioc_try_fmt_meta_cap	= unicam_g_fmt_meta_cap,
-
-	.vidioc_enum_input		= unicam_enum_input,
-	.vidioc_g_input			= unicam_g_input,
-	.vidioc_s_input			= unicam_s_input,
-
-	.vidioc_querystd		= unicam_querystd,
-	.vidioc_s_std			= unicam_s_std,
-	.vidioc_g_std			= unicam_g_std,
-
-	.vidioc_g_edid			= unicam_g_edid,
-	.vidioc_s_edid			= unicam_s_edid,
-
-	.vidioc_enum_framesizes		= unicam_enum_framesizes,
-	.vidioc_enum_frameintervals	= unicam_enum_frameintervals,
-
-	.vidioc_g_selection		= unicam_g_selection,
-	.vidioc_s_selection		= unicam_s_selection,
-
-	.vidioc_g_parm			= unicam_g_parm,
-	.vidioc_s_parm			= unicam_s_parm,
-
-	.vidioc_s_dv_timings		= unicam_s_dv_timings,
-	.vidioc_g_dv_timings		= unicam_g_dv_timings,
-	.vidioc_query_dv_timings	= unicam_query_dv_timings,
-	.vidioc_enum_dv_timings		= unicam_enum_dv_timings,
-	.vidioc_dv_timings_cap		= unicam_dv_timings_cap,
-
-	.vidioc_reqbufs			= vb2_ioctl_reqbufs,
-	.vidioc_create_bufs		= vb2_ioctl_create_bufs,
-	.vidioc_prepare_buf		= vb2_ioctl_prepare_buf,
-	.vidioc_querybuf		= vb2_ioctl_querybuf,
-	.vidioc_qbuf			= vb2_ioctl_qbuf,
-	.vidioc_dqbuf			= vb2_ioctl_dqbuf,
-	.vidioc_expbuf			= vb2_ioctl_expbuf,
-	.vidioc_streamon		= vb2_ioctl_streamon,
-	.vidioc_streamoff		= vb2_ioctl_streamoff,
-
-	.vidioc_log_status		= unicam_log_status,
-	.vidioc_subscribe_event		= unicam_subscribe_event,
-	.vidioc_unsubscribe_event	= v4l2_event_unsubscribe,
-};
-
 static int
 unicam_async_bound(struct v4l2_async_notifier *notifier,
 		   struct v4l2_subdev *subdev,
-		   struct v4l2_async_subdev *asd)
+		   struct v4l2_async_connection *asd)
 {
 	struct unicam_device *unicam = to_unicam_device(notifier->v4l2_dev);
 
@@ -2303,8 +2835,8 @@ static void unicam_release(struct kref *kref)
 	v4l2_ctrl_handler_free(&unicam->ctrl_handler);
 	media_device_cleanup(&unicam->mdev);
 
-	if (unicam->sensor_config)
-		v4l2_subdev_free_pad_config(unicam->sensor_config);
+	if (unicam->sensor_state)
+		__v4l2_subdev_state_free(unicam->sensor_state);
 
 	kfree(unicam);
 }
@@ -2326,11 +2858,11 @@ static void unicam_node_release(struct video_device *vdev)
 	unicam_put(node->dev);
 }
 
-static int register_node(struct unicam_device *unicam, struct unicam_node *node,
-			 enum v4l2_buf_type type, int pad_id)
+static int unicam_set_default_format(struct unicam_device *unicam,
+				     struct unicam_node *node,
+				     int pad_id,
+				     const struct unicam_fmt **ret_fmt)
 {
-	struct video_device *vdev;
-	struct vb2_queue *q;
 	struct v4l2_mbus_framefmt mbus_fmt = {0};
 	const struct unicam_fmt *fmt;
 	int ret;
@@ -2351,14 +2883,12 @@ static int register_node(struct unicam_device *unicam, struct unicam_node *node,
 			 */
 			fmt = get_first_supported_format(unicam);
 
-			if (!fmt)
-				/* No compatible formats */
-				return -EINVAL;
-
-			mbus_fmt.code = fmt->code;
-			ret = __subdev_set_format(unicam, &mbus_fmt, pad_id);
-			if (ret)
-				return -EINVAL;
+			if (fmt) {
+				mbus_fmt.code = fmt->code;
+				ret = __subdev_set_format(unicam, &mbus_fmt, pad_id);
+				if (ret)
+					return -EINVAL;
+			}
 		}
 		if (mbus_fmt.field != V4L2_FIELD_NONE) {
 			/* Interlaced not supported - disable it now. */
@@ -2368,7 +2898,8 @@ static int register_node(struct unicam_device *unicam, struct unicam_node *node,
 				return -EINVAL;
 		}
 
-		node->v_fmt.fmt.pix.pixelformat = fmt->fourcc ? fmt->fourcc
+		if (fmt)
+			node->v_fmt.fmt.pix.pixelformat = fmt->fourcc ? fmt->fourcc
 						: fmt->repacked_fourcc;
 	} else {
 		/* Fix this node format as embedded data. */
@@ -2376,14 +2907,69 @@ static int register_node(struct unicam_device *unicam, struct unicam_node *node,
 		node->v_fmt.fmt.meta.dataformat = fmt->fourcc;
 	}
 
+	*ret_fmt = fmt;
+
+	return 0;
+}
+
+static void unicam_mc_set_default_format(struct unicam_node *node, int pad_id)
+{
+	if (pad_id == IMAGE_PAD) {
+		struct v4l2_pix_format *pix_fmt = &node->v_fmt.fmt.pix;
+
+		pix_fmt->width = 640;
+		pix_fmt->height = 480;
+		pix_fmt->field = V4L2_FIELD_NONE;
+		pix_fmt->colorspace = V4L2_COLORSPACE_SRGB;
+		pix_fmt->ycbcr_enc = V4L2_YCBCR_ENC_601;
+		pix_fmt->quantization = V4L2_QUANTIZATION_LIM_RANGE;
+		pix_fmt->xfer_func = V4L2_XFER_FUNC_SRGB;
+		pix_fmt->pixelformat = formats[0].fourcc;
+		unicam_calc_format_size_bpl(node->dev, &formats[0],
+					    &node->v_fmt);
+		node->v_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+
+		node->fmt = &formats[0];
+	} else {
+		const struct unicam_fmt *fmt;
+
+		/* Fix this node format as embedded data. */
+		fmt = find_format_by_code(MEDIA_BUS_FMT_SENSOR_DATA);
+		node->v_fmt.fmt.meta.dataformat = fmt->fourcc;
+		node->fmt = fmt;
+
+		node->v_fmt.fmt.meta.buffersize = UNICAM_EMBEDDED_SIZE;
+		node->embedded_lines = 1;
+		node->v_fmt.type = V4L2_BUF_TYPE_META_CAPTURE;
+	}
+}
+
+static int register_node(struct unicam_device *unicam, struct unicam_node *node,
+			 enum v4l2_buf_type type, int pad_id)
+{
+	struct video_device *vdev;
+	struct vb2_queue *q;
+	int ret;
+
 	node->dev = unicam;
 	node->pad_id = pad_id;
-	node->fmt = fmt;
 
-	/* Read current subdev format */
-	unicam_reset_format(node);
+	if (!unicam->mc_api) {
+		const struct unicam_fmt *fmt;
 
-	if (v4l2_subdev_has_op(unicam->sensor, video, s_std)) {
+		ret = unicam_set_default_format(unicam, node, pad_id, &fmt);
+		if (ret)
+			return ret;
+		node->fmt = fmt;
+		/* Read current subdev format */
+		if (fmt)
+			unicam_reset_format(node);
+	} else {
+		unicam_mc_set_default_format(node, pad_id);
+	}
+
+	if (!unicam->mc_api &&
+	    v4l2_subdev_has_op(unicam->sensor, video, s_std)) {
 		v4l2_std_id tvnorms;
 
 		if (WARN_ON(!v4l2_subdev_has_op(unicam->sensor, video,
@@ -2406,12 +2992,15 @@ static int register_node(struct unicam_device *unicam, struct unicam_node *node,
 
 	vdev = &node->video_dev;
 	if (pad_id == IMAGE_PAD) {
-		/* Add controls from the subdevice */
-		ret = v4l2_ctrl_add_handler(&unicam->ctrl_handler,
-					    unicam->sensor->ctrl_handler, NULL,
-					    true);
-		if (ret < 0)
-			return ret;
+		if (!unicam->mc_api) {
+			/* Add controls from the subdevice */
+			ret = v4l2_ctrl_add_handler(&unicam->ctrl_handler,
+						    unicam->sensor->ctrl_handler,
+						    NULL,
+						    true);
+			if (ret < 0)
+				return ret;
+		}
 
 		/*
 		 * If the sensor subdevice has any controls, associate the node
@@ -2443,7 +3032,8 @@ static int register_node(struct unicam_device *unicam, struct unicam_node *node,
 
 	vdev->release = unicam_node_release;
 	vdev->fops = &unicam_fops;
-	vdev->ioctl_ops = &unicam_ioctl_ops;
+	vdev->ioctl_ops = unicam->mc_api ? &unicam_mc_ioctl_ops :
+					   &unicam_ioctl_ops;
 	vdev->v4l2_dev = &unicam->v4l2_dev;
 	vdev->vfl_dir = VFL_DIR_RX;
 	vdev->queue = q;
@@ -2451,6 +3041,10 @@ static int register_node(struct unicam_device *unicam, struct unicam_node *node,
 	vdev->device_caps = (pad_id == IMAGE_PAD) ?
 				V4L2_CAP_VIDEO_CAPTURE : V4L2_CAP_META_CAPTURE;
 	vdev->device_caps |= V4L2_CAP_READWRITE | V4L2_CAP_STREAMING;
+	if (unicam->mc_api) {
+		vdev->device_caps |= V4L2_CAP_IO_MC;
+		vdev->entity.ops = &unicam_mc_entity_ops;
+	}
 
 	/* Define the device names */
 	snprintf(vdev->name, sizeof(vdev->name), "%s-%s", UNICAM_MODULE_NAME,
@@ -2470,47 +3064,61 @@ static int register_node(struct unicam_device *unicam, struct unicam_node *node,
 		unicam_err(unicam, "Unable to allocate dummy buffer.\n");
 		return -ENOMEM;
 	}
-	if (pad_id == METADATA_PAD ||
-	    !v4l2_subdev_has_op(unicam->sensor, video, s_std)) {
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_STD);
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_G_STD);
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_ENUMSTD);
+	if (!unicam->mc_api) {
+		if (pad_id == METADATA_PAD ||
+		    !v4l2_subdev_has_op(unicam->sensor, video, s_std)) {
+			v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_STD);
+			v4l2_disable_ioctl(&node->video_dev, VIDIOC_G_STD);
+			v4l2_disable_ioctl(&node->video_dev, VIDIOC_ENUMSTD);
+		}
+		if (pad_id == METADATA_PAD ||
+		    !v4l2_subdev_has_op(unicam->sensor, video, querystd))
+			v4l2_disable_ioctl(&node->video_dev, VIDIOC_QUERYSTD);
+		if (pad_id == METADATA_PAD ||
+		    !v4l2_subdev_has_op(unicam->sensor, video, s_dv_timings)) {
+			v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_EDID);
+			v4l2_disable_ioctl(&node->video_dev, VIDIOC_G_EDID);
+			v4l2_disable_ioctl(&node->video_dev,
+					   VIDIOC_DV_TIMINGS_CAP);
+			v4l2_disable_ioctl(&node->video_dev,
+					   VIDIOC_G_DV_TIMINGS);
+			v4l2_disable_ioctl(&node->video_dev,
+					   VIDIOC_S_DV_TIMINGS);
+			v4l2_disable_ioctl(&node->video_dev,
+					   VIDIOC_ENUM_DV_TIMINGS);
+			v4l2_disable_ioctl(&node->video_dev,
+					   VIDIOC_QUERY_DV_TIMINGS);
+		}
+		if (pad_id == METADATA_PAD ||
+		    !v4l2_subdev_has_op(unicam->sensor, pad,
+					enum_frame_interval))
+			v4l2_disable_ioctl(&node->video_dev,
+					   VIDIOC_ENUM_FRAMEINTERVALS);
+		if (pad_id == METADATA_PAD ||
+		    !v4l2_subdev_has_op(unicam->sensor, video,
+					g_frame_interval))
+			v4l2_disable_ioctl(&node->video_dev, VIDIOC_G_PARM);
+		if (pad_id == METADATA_PAD ||
+		    !v4l2_subdev_has_op(unicam->sensor, video,
+					s_frame_interval))
+			v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_PARM);
+
+		if (pad_id == METADATA_PAD ||
+		    !v4l2_subdev_has_op(unicam->sensor, pad,
+					enum_frame_size))
+			v4l2_disable_ioctl(&node->video_dev,
+					   VIDIOC_ENUM_FRAMESIZES);
+
+		if (node->pad_id == METADATA_PAD ||
+		    !v4l2_subdev_has_op(unicam->sensor, pad, set_selection))
+			v4l2_disable_ioctl(&node->video_dev,
+					   VIDIOC_S_SELECTION);
+
+		if (node->pad_id == METADATA_PAD ||
+		    !v4l2_subdev_has_op(unicam->sensor, pad, get_selection))
+			v4l2_disable_ioctl(&node->video_dev,
+					   VIDIOC_G_SELECTION);
 	}
-	if (pad_id == METADATA_PAD ||
-	    !v4l2_subdev_has_op(unicam->sensor, video, querystd))
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_QUERYSTD);
-	if (pad_id == METADATA_PAD ||
-	    !v4l2_subdev_has_op(unicam->sensor, video, s_dv_timings)) {
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_EDID);
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_G_EDID);
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_DV_TIMINGS_CAP);
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_G_DV_TIMINGS);
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_DV_TIMINGS);
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_ENUM_DV_TIMINGS);
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_QUERY_DV_TIMINGS);
-	}
-	if (pad_id == METADATA_PAD ||
-	    !v4l2_subdev_has_op(unicam->sensor, pad, enum_frame_interval))
-		v4l2_disable_ioctl(&node->video_dev,
-				   VIDIOC_ENUM_FRAMEINTERVALS);
-	if (pad_id == METADATA_PAD ||
-	    !v4l2_subdev_has_op(unicam->sensor, video, g_frame_interval))
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_G_PARM);
-	if (pad_id == METADATA_PAD ||
-	    !v4l2_subdev_has_op(unicam->sensor, video, s_frame_interval))
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_PARM);
-
-	if (pad_id == METADATA_PAD ||
-	    !v4l2_subdev_has_op(unicam->sensor, pad, enum_frame_size))
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_ENUM_FRAMESIZES);
-
-	if (node->pad_id == METADATA_PAD ||
-	    !v4l2_subdev_has_op(unicam->sensor, pad, set_selection))
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_S_SELECTION);
-
-	if (node->pad_id == METADATA_PAD ||
-	    !v4l2_subdev_has_op(unicam->sensor, pad, get_selection))
-		v4l2_disable_ioctl(&node->video_dev, VIDIOC_G_SELECTION);
 
 	ret = video_register_device(vdev, VFL_TYPE_VIDEO, -1);
 	if (ret) {
@@ -2528,7 +3136,8 @@ static int register_node(struct unicam_device *unicam, struct unicam_node *node,
 	node->registered = true;
 
 	if (pad_id != METADATA_PAD || unicam->sensor_embedded_data) {
-		ret = media_create_pad_link(&unicam->sensor->entity, pad_id,
+		ret = media_create_pad_link(&unicam->sensor->entity,
+					    node->src_pad_id,
 					    &node->video_dev.entity, 0,
 					    MEDIA_LNK_FL_ENABLED |
 					    MEDIA_LNK_FL_IMMUTABLE);
@@ -2560,17 +3169,35 @@ static void unregister_nodes(struct unicam_device *unicam)
 	}
 }
 
-static int unicam_probe_complete(struct unicam_device *unicam)
+static int unicam_async_complete(struct v4l2_async_notifier *notifier)
 {
+	static struct lock_class_key key;
+	struct unicam_device *unicam = to_unicam_device(notifier->v4l2_dev);
+	unsigned int i, source_pads = 0;
 	int ret;
 
 	unicam->v4l2_dev.notify = unicam_notify;
 
-	unicam->sensor_config = v4l2_subdev_alloc_pad_config(unicam->sensor);
-	if (!unicam->sensor_config)
+	unicam->sensor_state = __v4l2_subdev_state_alloc(unicam->sensor,
+							 "unicam:async->lock", &key);
+	if (!unicam->sensor_state)
 		return -ENOMEM;
 
-	unicam->sensor_embedded_data = (unicam->sensor->entity.num_pads >= 2);
+	for (i = 0; i < unicam->sensor->entity.num_pads; i++) {
+		if (unicam->sensor->entity.pads[i].flags & MEDIA_PAD_FL_SOURCE) {
+			if (source_pads < MAX_NODES) {
+				unicam->node[source_pads].src_pad_id = i;
+				unicam_dbg(3, unicam, "source pad %u is index %u\n",
+					   source_pads, i);
+			}
+			source_pads++;
+		}
+	}
+	if (!source_pads) {
+		unicam_err(unicam, "No source pads on sensor.\n");
+		ret = -ENODEV;
+		goto unregister;
+	}
 
 	ret = register_node(unicam, &unicam->node[IMAGE_PAD],
 			    V4L2_BUF_TYPE_VIDEO_CAPTURE, IMAGE_PAD);
@@ -2579,14 +3206,21 @@ static int unicam_probe_complete(struct unicam_device *unicam)
 		goto unregister;
 	}
 
-	ret = register_node(unicam, &unicam->node[METADATA_PAD],
-			    V4L2_BUF_TYPE_META_CAPTURE, METADATA_PAD);
-	if (ret) {
-		unicam_err(unicam, "Unable to register metadata video device.\n");
-		goto unregister;
+	if (source_pads >= 2) {
+		unicam->sensor_embedded_data = true;
+
+		ret = register_node(unicam, &unicam->node[METADATA_PAD],
+				    V4L2_BUF_TYPE_META_CAPTURE, METADATA_PAD);
+		if (ret) {
+			unicam_err(unicam, "Unable to register metadata video device.\n");
+			goto unregister;
+		}
 	}
 
-	ret = v4l2_device_register_ro_subdev_nodes(&unicam->v4l2_dev);
+	if (unicam->mc_api)
+		ret = v4l2_device_register_subdev_nodes(&unicam->v4l2_dev);
+	else
+		ret = v4l2_device_register_ro_subdev_nodes(&unicam->v4l2_dev);
 	if (ret) {
 		unicam_err(unicam, "Unable to register subdev nodes.\n");
 		goto unregister;
@@ -2604,13 +3238,6 @@ unregister:
 	unicam_put(unicam);
 
 	return ret;
-}
-
-static int unicam_async_complete(struct v4l2_async_notifier *notifier)
-{
-	struct unicam_device *unicam = to_unicam_device(notifier->v4l2_dev);
-
-	return unicam_probe_complete(unicam);
 }
 
 static const struct v4l2_async_notifier_operations unicam_async_ops = {
@@ -2717,18 +3344,18 @@ static int of_unicam_connect_subdevs(struct unicam_device *dev)
 		   dev->max_data_lanes, dev->bus_flags);
 
 	/* Initialize and register the async notifier. */
-	v4l2_async_notifier_init(&dev->notifier);
+	v4l2_async_nf_init(&dev->notifier, &dev->v4l2_dev);
 	dev->notifier.ops = &unicam_async_ops;
 
-	dev->asd.match_type = V4L2_ASYNC_MATCH_FWNODE;
-	dev->asd.match.fwnode = of_fwnode_handle(sensor_node);
-	ret = v4l2_async_notifier_add_subdev(&dev->notifier, &dev->asd);
-	if (ret) {
+	dev->asd = v4l2_async_nf_add_fwnode(&dev->notifier,
+					    of_fwnode_handle(sensor_node),
+					    struct v4l2_async_connection);
+	if (IS_ERR(dev->asd)) {
 		unicam_err(dev, "Error adding subdevice: %d\n", ret);
 		goto cleanup_exit;
 	}
 
-	ret = v4l2_async_notifier_register(&dev->v4l2_dev, &dev->notifier);
+	ret = v4l2_async_nf_register(&dev->notifier);
 	if (ret) {
 		unicam_err(dev, "Error registering async notifier: %d\n", ret);
 		ret = -EINVAL;
@@ -2752,6 +3379,14 @@ static int unicam_probe(struct platform_device *pdev)
 
 	kref_init(&unicam->kref);
 	unicam->pdev = pdev;
+
+	/*
+	 * Adopt the current setting of the module parameter, and check if
+	 * device tree requests it.
+	 */
+	unicam->mc_api = media_controller;
+	if (of_property_read_bool(pdev->dev.of_node, "brcm,media-controller"))
+		unicam->mc_api = true;
 
 	unicam->base = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(unicam->base)) {
@@ -2780,6 +3415,9 @@ static int unicam_probe(struct platform_device *pdev)
 		ret = PTR_ERR(unicam->vpu_clock);
 		goto err_unicam_put;
 	}
+
+	unicam->sync_gpio = devm_gpiod_get_optional(&pdev->dev, "sync",
+						    GPIOD_OUT_LOW);
 
 	ret = platform_get_irq(pdev, 0);
 	if (ret <= 0) {
@@ -2857,7 +3495,7 @@ static int unicam_remove(struct platform_device *pdev)
 
 	unicam_dbg(2, unicam, "%s\n", __func__);
 
-	v4l2_async_notifier_unregister(&unicam->notifier);
+	v4l2_async_nf_unregister(&unicam->notifier);
 	v4l2_device_unregister(&unicam->v4l2_dev);
 	media_device_unregister(&unicam->mdev);
 	unregister_nodes(unicam);

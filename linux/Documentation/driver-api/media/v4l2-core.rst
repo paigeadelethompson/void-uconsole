@@ -15,7 +15,6 @@ Video4Linux devices
     v4l2-controls
     v4l2-videobuf
     v4l2-videobuf2
-    v4l2-clocks
     v4l2-dv-timings
     v4l2-flash-led-class
     v4l2-mc
@@ -23,6 +22,7 @@ Video4Linux devices
     v4l2-mem2mem
     v4l2-async
     v4l2-fwnode
+    v4l2-cci
     v4l2-rect
     v4l2-tuner
     v4l2-common

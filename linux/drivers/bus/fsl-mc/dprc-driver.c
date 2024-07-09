@@ -11,7 +11,6 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/interrupt.h>
-#include <linux/msi.h>
 #include <linux/fsl/mc.h>
 
 #include "fsl-mc-private.h"
@@ -46,6 +45,9 @@ static int __fsl_mc_device_remove_if_not_in_mc(struct device *dev, void *data)
 	struct fsl_mc_child_objs *objs;
 	struct fsl_mc_device *mc_dev;
 
+	if (!dev_is_fsl_mc(dev))
+		return 0;
+
 	mc_dev = to_fsl_mc_device(dev);
 	objs = data;
 
@@ -65,6 +67,9 @@ static int __fsl_mc_device_remove_if_not_in_mc(struct device *dev, void *data)
 
 static int __fsl_mc_device_remove(struct device *dev, void *data)
 {
+	if (!dev_is_fsl_mc(dev))
+		return 0;
+
 	fsl_mc_device_remove(to_fsl_mc_device(dev));
 	return 0;
 }
@@ -237,8 +242,8 @@ static void dprc_add_new_devices(struct fsl_mc_device *mc_bus_dev,
  * populated before they can get allocation requests from probe callbacks
  * of the device drivers for the non-allocatable devices.
  */
-static int dprc_scan_objects(struct fsl_mc_device *mc_bus_dev,
-			    bool alloc_interrupts)
+int dprc_scan_objects(struct fsl_mc_device *mc_bus_dev,
+		      bool alloc_interrupts)
 {
 	int num_child_objects;
 	int dprc_get_obj_failures;
@@ -350,7 +355,8 @@ static int dprc_scan_objects(struct fsl_mc_device *mc_bus_dev,
  * dprc_scan_container - Scans a physical DPRC and synchronizes Linux bus state
  *
  * @mc_bus_dev: pointer to the fsl-mc device that represents a DPRC object
- *
+ * @alloc_interrupts: if true the function allocates the interrupt pool,
+ *                    otherwise the interrupt allocation is delayed
  * Scans the physical DPRC and synchronizes the state of the Linux
  * bus driver with the actual state of the MC by adding and removing
  * devices as appropriate.
@@ -373,10 +379,11 @@ int dprc_scan_container(struct fsl_mc_device *mc_bus_dev,
 	return error;
 }
 EXPORT_SYMBOL_GPL(dprc_scan_container);
+
 /**
  * dprc_irq0_handler - Regular ISR for DPRC interrupt 0
  *
- * @irq: IRQ number of the interrupt being handled
+ * @irq_num: IRQ number of the interrupt being handled
  * @arg: Pointer to device structure
  */
 static irqreturn_t dprc_irq0_handler(int irq_num, void *arg)
@@ -387,7 +394,7 @@ static irqreturn_t dprc_irq0_handler(int irq_num, void *arg)
 /**
  * dprc_irq0_handler_thread - Handler thread function for DPRC interrupt 0
  *
- * @irq: IRQ number of the interrupt being handled
+ * @irq_num: IRQ number of the interrupt being handled
  * @arg: Pointer to device structure
  */
 static irqreturn_t dprc_irq0_handler_thread(int irq_num, void *arg)
@@ -398,7 +405,7 @@ static irqreturn_t dprc_irq0_handler_thread(int irq_num, void *arg)
 	struct fsl_mc_device *mc_dev = to_fsl_mc_device(dev);
 	struct fsl_mc_bus *mc_bus = to_fsl_mc_bus(mc_dev);
 	struct fsl_mc_io *mc_io = mc_dev->mc_io;
-	struct msi_desc *msi_desc = mc_dev->irqs[0]->msi_desc;
+	int irq = mc_dev->irqs[0]->virq;
 
 	dev_dbg(dev, "DPRC IRQ %d triggered on CPU %u\n",
 		irq_num, smp_processor_id());
@@ -407,7 +414,7 @@ static irqreturn_t dprc_irq0_handler_thread(int irq_num, void *arg)
 		return IRQ_HANDLED;
 
 	mutex_lock(&mc_bus->scan_mutex);
-	if (!msi_desc || msi_desc->irq != (u32)irq_num)
+	if (irq != (u32)irq_num)
 		goto out;
 
 	status = 0;
@@ -458,8 +465,9 @@ out:
 /*
  * Disable and clear interrupt for a given DPRC object
  */
-static int disable_dprc_irq(struct fsl_mc_device *mc_dev)
+int disable_dprc_irq(struct fsl_mc_device *mc_dev)
 {
+	struct fsl_mc_bus *mc_bus = to_fsl_mc_bus(mc_dev);
 	int error;
 	struct fsl_mc_io *mc_io = mc_dev->mc_io;
 
@@ -496,7 +504,16 @@ static int disable_dprc_irq(struct fsl_mc_device *mc_dev)
 		return error;
 	}
 
+	mc_bus->irq_enabled = 0;
+
 	return 0;
+}
+
+int get_dprc_irq_state(struct fsl_mc_device *mc_dev)
+{
+	struct fsl_mc_bus *mc_bus = to_fsl_mc_bus(mc_dev);
+
+	return mc_bus->irq_enabled;
 }
 
 static int register_dprc_irq_handler(struct fsl_mc_device *mc_dev)
@@ -509,7 +526,7 @@ static int register_dprc_irq_handler(struct fsl_mc_device *mc_dev)
 	 * function that programs the MSI physically in the device
 	 */
 	error = devm_request_threaded_irq(&mc_dev->dev,
-					  irq->msi_desc->irq,
+					  irq->virq,
 					  dprc_irq0_handler,
 					  dprc_irq0_handler_thread,
 					  IRQF_NO_SUSPEND | IRQF_ONESHOT,
@@ -525,8 +542,9 @@ static int register_dprc_irq_handler(struct fsl_mc_device *mc_dev)
 	return 0;
 }
 
-static int enable_dprc_irq(struct fsl_mc_device *mc_dev)
+int enable_dprc_irq(struct fsl_mc_device *mc_dev)
 {
+	struct fsl_mc_bus *mc_bus = to_fsl_mc_bus(mc_dev);
 	int error;
 
 	/*
@@ -553,6 +571,8 @@ static int enable_dprc_irq(struct fsl_mc_device *mc_dev)
 
 		return error;
 	}
+
+	mc_bus->irq_enabled = 1;
 
 	return 0;
 }
@@ -603,6 +623,7 @@ int dprc_setup(struct fsl_mc_device *mc_dev)
 	struct irq_domain *mc_msi_domain;
 	bool mc_io_created = false;
 	bool msi_domain_set = false;
+	bool uapi_created = false;
 	u16 major_ver, minor_ver;
 	size_t region_size;
 	int error;
@@ -635,6 +656,11 @@ int dprc_setup(struct fsl_mc_device *mc_dev)
 			return error;
 
 		mc_io_created = true;
+	} else {
+		error = fsl_mc_uapi_create_device_file(mc_bus);
+		if (error < 0)
+			return -EPROBE_DEFER;
+		uapi_created = true;
 	}
 
 	mc_msi_domain = fsl_mc_find_msi_domain(&mc_dev->dev);
@@ -670,9 +696,7 @@ int dprc_setup(struct fsl_mc_device *mc_dev)
 		goto error_cleanup_open;
 	}
 
-	if (major_ver < DPRC_MIN_VER_MAJOR ||
-	    (major_ver == DPRC_MIN_VER_MAJOR &&
-	     minor_ver < DPRC_MIN_VER_MINOR)) {
+	if (major_ver < DPRC_MIN_VER_MAJOR) {
 		dev_err(&mc_dev->dev,
 			"ERROR: DPRC version %d.%d not supported\n",
 			major_ver, minor_ver);
@@ -693,6 +717,9 @@ error_cleanup_msi_domain:
 		fsl_destroy_mc_io(mc_dev->mc_io);
 		mc_dev->mc_io = NULL;
 	}
+
+	if (uapi_created)
+		fsl_mc_uapi_remove_device_file(mc_bus);
 
 	return error;
 }
@@ -749,7 +776,7 @@ static void dprc_teardown_irq(struct fsl_mc_device *mc_dev)
 
 	(void)disable_dprc_irq(mc_dev);
 
-	devm_free_irq(&mc_dev->dev, irq->msi_desc->irq, &mc_dev->dev);
+	devm_free_irq(&mc_dev->dev, irq->virq, &mc_dev->dev);
 
 	fsl_mc_free_irqs(mc_dev);
 }
@@ -765,6 +792,7 @@ static void dprc_teardown_irq(struct fsl_mc_device *mc_dev)
 
 int dprc_cleanup(struct fsl_mc_device *mc_dev)
 {
+	struct fsl_mc_bus *mc_bus = to_fsl_mc_bus(mc_dev);
 	int error;
 
 	/* this function should be called only for DPRCs, it
@@ -795,6 +823,8 @@ int dprc_cleanup(struct fsl_mc_device *mc_dev)
 	if (!fsl_mc_is_root_dprc(&mc_dev->dev)) {
 		fsl_destroy_mc_io(mc_dev->mc_io);
 		mc_dev->mc_io = NULL;
+	} else {
+		fsl_mc_uapi_remove_device_file(mc_bus);
 	}
 
 	return 0;
@@ -811,15 +841,14 @@ EXPORT_SYMBOL_GPL(dprc_cleanup);
  * It tears down the interrupts that were configured for the DPRC device.
  * It destroys the interrupt pool associated with this MC bus.
  */
-static int dprc_remove(struct fsl_mc_device *mc_dev)
+static void dprc_remove(struct fsl_mc_device *mc_dev)
 {
 	struct fsl_mc_bus *mc_bus = to_fsl_mc_bus(mc_dev);
 
-	if (!is_fsl_mc_bus_dprc(mc_dev))
-		return -EINVAL;
-
-	if (!mc_bus->irq_resources)
-		return -EINVAL;
+	if (!mc_bus->irq_resources) {
+		dev_err(&mc_dev->dev, "No irq resources, so unbinding the device failed\n");
+		return;
+	}
 
 	if (dev_get_msi_domain(&mc_dev->dev))
 		dprc_teardown_irq(mc_dev);
@@ -829,7 +858,6 @@ static int dprc_remove(struct fsl_mc_device *mc_dev)
 	dprc_cleanup(mc_dev);
 
 	dev_info(&mc_dev->dev, "DPRC device unbound from driver");
-	return 0;
 }
 
 static const struct fsl_mc_device_id match_id_table[] = {

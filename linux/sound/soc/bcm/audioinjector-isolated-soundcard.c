@@ -90,7 +90,7 @@ static struct snd_soc_dai_link audioinjector_isolated_dai[] = {
 		.stream_name = "AI-HIFI",
 		.ops = &audioinjector_isolated_ops,
 		.init = audioinjector_isolated_dai_init,
-		.symmetric_rates = 1,
+		.symmetric_rate = 1,
 		.symmetric_channels = 1,
 		.dai_fmt = SND_SOC_DAIFMT_CBM_CFM|SND_SOC_DAIFMT_I2S|SND_SOC_DAIFMT_NB_NF,
 		SND_SOC_DAILINK_REG(audioinjector_isolated),
@@ -116,6 +116,7 @@ static const struct snd_soc_dapm_route audioinjector_isolated_route[] = {
 
 static struct snd_soc_card snd_soc_audioinjector_isolated = {
 	.name = "audioinjector-isolated-soundcard",
+	.owner = THIS_MODULE,
 	.dai_link = audioinjector_isolated_dai,
 	.num_links = ARRAY_SIZE(audioinjector_isolated_dai),
 

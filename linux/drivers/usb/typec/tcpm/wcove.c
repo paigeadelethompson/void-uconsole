@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-2.0
-/**
+/*
  * typec_wcove.c - WhiskeyCove PMIC USB Type-C PHY driver
  *
  * Copyright (C) 2017 Intel Corporation
@@ -356,7 +356,8 @@ static int wcove_set_pd_rx(struct tcpc_dev *tcpc, bool on)
 
 static int wcove_pd_transmit(struct tcpc_dev *tcpc,
 			     enum tcpm_transmit_type type,
-			     const struct pd_message *msg)
+			     const struct pd_message *msg,
+			     unsigned int negotiated_rev)
 {
 	struct wcove_typec *wcove = tcpc_to_wcove(tcpc);
 	unsigned int info = 0;
@@ -377,7 +378,7 @@ static int wcove_pd_transmit(struct tcpc_dev *tcpc,
 		const u8 *data = (void *)msg;
 		int i;
 
-		for (i = 0; i < pd_header_cnt(msg->header) * 4 + 2; i++) {
+		for (i = 0; i < pd_header_cnt_le(msg->header) * 4 + 2; i++) {
 			ret = regmap_write(wcove->regmap, USBC_TX_DATA + i,
 					   data[i]);
 			if (ret)
@@ -670,7 +671,7 @@ static int wcove_typec_probe(struct platform_device *pdev)
 	return 0;
 }
 
-static int wcove_typec_remove(struct platform_device *pdev)
+static void wcove_typec_remove(struct platform_device *pdev)
 {
 	struct wcove_typec *wcove = platform_get_drvdata(pdev);
 	unsigned int val;
@@ -683,8 +684,6 @@ static int wcove_typec_remove(struct platform_device *pdev)
 
 	tcpm_unregister_port(wcove->tcpm);
 	fwnode_remove_software_node(wcove->tcpc.fwnode);
-
-	return 0;
 }
 
 static struct platform_driver wcove_typec_driver = {
@@ -692,7 +691,7 @@ static struct platform_driver wcove_typec_driver = {
 		.name		= "bxt_wcove_usbc",
 	},
 	.probe			= wcove_typec_probe,
-	.remove			= wcove_typec_remove,
+	.remove_new		= wcove_typec_remove,
 };
 
 module_platform_driver(wcove_typec_driver);

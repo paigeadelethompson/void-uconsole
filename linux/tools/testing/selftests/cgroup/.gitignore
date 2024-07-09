@@ -3,3 +3,8 @@ test_memcontrol
 test_core
 test_freezer
 test_kmem
+test_kill
+test_cpu
+test_cpuset
+test_zswap
+wait_inotify

@@ -4,14 +4,8 @@
  */
 
 #include <linux/init.h>
-#include <linux/irq.h>
-#include <linux/of_address.h>
-#include <linux/of_irq.h>
-#include <linux/of_platform.h>
-#include <linux/mm.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
-#include <asm/mach/time.h>
 
 #include "common.h"
 #include "hardware.h"
@@ -56,17 +50,6 @@ static void __init imx27_init_early(void)
 	mxc_set_cpu_type(MXC_CPU_MX27);
 }
 
-static void __init mx27_init_irq(void)
-{
-	void __iomem *avic_base;
-	struct device_node *np;
-
-	np = of_find_compatible_node(NULL, NULL, "fsl,avic");
-	avic_base = of_iomap(np, 0);
-	BUG_ON(!avic_base);
-	mxc_init_irq(avic_base);
-}
-
 static const char * const imx27_dt_board_compat[] __initconst = {
 	"fsl,imx27",
 	NULL
@@ -75,7 +58,6 @@ static const char * const imx27_dt_board_compat[] __initconst = {
 DT_MACHINE_START(IMX27_DT, "Freescale i.MX27 (Device Tree Support)")
 	.map_io		= mx27_map_io,
 	.init_early	= imx27_init_early,
-	.init_irq	= mx27_init_irq,
 	.init_late	= imx27_pm_init,
 	.dt_compat	= imx27_dt_board_compat,
 MACHINE_END

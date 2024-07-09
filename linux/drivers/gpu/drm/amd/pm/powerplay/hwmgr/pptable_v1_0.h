@@ -164,7 +164,7 @@ typedef struct _ATOM_Tonga_State {
 typedef struct _ATOM_Tonga_State_Array {
 	UCHAR ucRevId;
 	UCHAR ucNumEntries;		/* Number of entries. */
-	ATOM_Tonga_State entries[1];	/* Dynamically allocate entries. */
+	ATOM_Tonga_State entries[];	/* Dynamically allocate entries. */
 } ATOM_Tonga_State_Array;
 
 typedef struct _ATOM_Tonga_MCLK_Dependency_Record {
@@ -179,7 +179,7 @@ typedef struct _ATOM_Tonga_MCLK_Dependency_Record {
 typedef struct _ATOM_Tonga_MCLK_Dependency_Table {
 	UCHAR ucRevId;
 	UCHAR ucNumEntries; 										/* Number of entries. */
-	ATOM_Tonga_MCLK_Dependency_Record entries[1];				/* Dynamically allocate entries. */
+	ATOM_Tonga_MCLK_Dependency_Record entries[];				/* Dynamically allocate entries. */
 } ATOM_Tonga_MCLK_Dependency_Table;
 
 typedef struct _ATOM_Tonga_SCLK_Dependency_Record {
@@ -194,7 +194,7 @@ typedef struct _ATOM_Tonga_SCLK_Dependency_Record {
 typedef struct _ATOM_Tonga_SCLK_Dependency_Table {
 	UCHAR ucRevId;
 	UCHAR ucNumEntries; 										/* Number of entries. */
-	ATOM_Tonga_SCLK_Dependency_Record entries[1];				 /* Dynamically allocate entries. */
+	ATOM_Tonga_SCLK_Dependency_Record entries[];				 /* Dynamically allocate entries. */
 } ATOM_Tonga_SCLK_Dependency_Table;
 
 typedef struct _ATOM_Polaris_SCLK_Dependency_Record {
@@ -210,7 +210,7 @@ typedef struct _ATOM_Polaris_SCLK_Dependency_Record {
 typedef struct _ATOM_Polaris_SCLK_Dependency_Table {
 	UCHAR ucRevId;
 	UCHAR ucNumEntries;							/* Number of entries. */
-	ATOM_Polaris_SCLK_Dependency_Record entries[1];				 /* Dynamically allocate entries. */
+	ATOM_Polaris_SCLK_Dependency_Record entries[];				 /* Dynamically allocate entries. */
 } ATOM_Polaris_SCLK_Dependency_Table;
 
 typedef struct _ATOM_Tonga_PCIE_Record {
@@ -222,7 +222,7 @@ typedef struct _ATOM_Tonga_PCIE_Record {
 typedef struct _ATOM_Tonga_PCIE_Table {
 	UCHAR ucRevId;
 	UCHAR ucNumEntries; 										/* Number of entries. */
-	ATOM_Tonga_PCIE_Record entries[1];							/* Dynamically allocate entries. */
+	ATOM_Tonga_PCIE_Record entries[];							/* Dynamically allocate entries. */
 } ATOM_Tonga_PCIE_Table;
 
 typedef struct _ATOM_Polaris10_PCIE_Record {
@@ -235,7 +235,7 @@ typedef struct _ATOM_Polaris10_PCIE_Record {
 typedef struct _ATOM_Polaris10_PCIE_Table {
 	UCHAR ucRevId;
 	UCHAR ucNumEntries;                                         /* Number of entries. */
-	ATOM_Polaris10_PCIE_Record entries[1];                      /* Dynamically allocate entries. */
+	ATOM_Polaris10_PCIE_Record entries[];                      /* Dynamically allocate entries. */
 } ATOM_Polaris10_PCIE_Table;
 
 
@@ -252,7 +252,7 @@ typedef struct _ATOM_Tonga_MM_Dependency_Record {
 typedef struct _ATOM_Tonga_MM_Dependency_Table {
 	UCHAR ucRevId;
 	UCHAR ucNumEntries; 										/* Number of entries. */
-	ATOM_Tonga_MM_Dependency_Record entries[1]; 			   /* Dynamically allocate entries. */
+	ATOM_Tonga_MM_Dependency_Record entries[]; 			   /* Dynamically allocate entries. */
 } ATOM_Tonga_MM_Dependency_Table;
 
 typedef struct _ATOM_Tonga_Voltage_Lookup_Record {
@@ -265,7 +265,7 @@ typedef struct _ATOM_Tonga_Voltage_Lookup_Record {
 typedef struct _ATOM_Tonga_Voltage_Lookup_Table {
 	UCHAR ucRevId;
 	UCHAR ucNumEntries; 										/* Number of entries. */
-	ATOM_Tonga_Voltage_Lookup_Record entries[1];				/* Dynamically allocate entries. */
+	ATOM_Tonga_Voltage_Lookup_Record entries[];				/* Dynamically allocate entries. */
 } ATOM_Tonga_Voltage_Lookup_Table;
 
 typedef struct _ATOM_Tonga_Fan_Table {
@@ -314,6 +314,36 @@ typedef struct _ATOM_Fiji_Fan_Table {
 	USHORT  usFanGainHbm;
 	USHORT  usReserved;
 } ATOM_Fiji_Fan_Table;
+
+typedef struct _ATOM_Polaris_Fan_Table {
+	UCHAR   ucRevId;						 /* Change this if the table format changes or version changes so that the other fields are not the same. */
+	UCHAR   ucTHyst;						 /* Temperature hysteresis. Integer. */
+	USHORT  usTMin; 						 /* The temperature, in 0.01 centigrades, below which we just run at a minimal PWM. */
+	USHORT  usTMed; 						 /* The middle temperature where we change slopes. */
+	USHORT  usTHigh;						 /* The high point above TMed for adjusting the second slope. */
+	USHORT  usPWMMin;						 /* The minimum PWM value in percent (0.01% increments). */
+	USHORT  usPWMMed;						 /* The PWM value (in percent) at TMed. */
+	USHORT  usPWMHigh;						 /* The PWM value at THigh. */
+	USHORT  usTMax; 						 /* The max temperature */
+	UCHAR   ucFanControlMode;				  /* Legacy or Fuzzy Fan mode */
+	USHORT  usFanPWMMax;					  /* Maximum allowed fan power in percent */
+	USHORT  usFanOutputSensitivity;		  /* Sensitivity of fan reaction to temepature changes */
+	USHORT  usFanRPMMax;					  /* The default value in RPM */
+	ULONG  ulMinFanSCLKAcousticLimit;		/* Minimum Fan Controller SCLK Frequency Acoustic Limit. */
+	UCHAR   ucTargetTemperature;			 /* Advanced fan controller target temperature. */
+	UCHAR   ucMinimumPWMLimit; 			  /* The minimum PWM that the advanced fan controller can set.	This should be set to the highest PWM that will run the fan at its lowest RPM. */
+	USHORT  usFanGainEdge;
+	USHORT  usFanGainHotspot;
+	USHORT  usFanGainLiquid;
+	USHORT  usFanGainVrVddc;
+	USHORT  usFanGainVrMvdd;
+	USHORT  usFanGainPlx;
+	USHORT  usFanGainHbm;
+	UCHAR   ucEnableZeroRPM;
+	UCHAR   ucFanStopTemperature;
+	UCHAR   ucFanStartTemperature;
+	USHORT  usReserved;
+} ATOM_Polaris_Fan_Table;
 
 typedef struct _ATOM_Tonga_Thermal_Controller {
 	UCHAR ucRevId;
@@ -388,6 +418,41 @@ typedef struct _ATOM_Fiji_PowerTune_Table {
 	UCHAR  ucPlx_I2C_Line;
 	USHORT usReserved;
 } ATOM_Fiji_PowerTune_Table;
+
+typedef struct _ATOM_Polaris_PowerTune_Table {
+    UCHAR  ucRevId;
+    USHORT usTDP;
+    USHORT usConfigurableTDP;
+    USHORT usTDC;
+    USHORT usBatteryPowerLimit;
+    USHORT usSmallPowerLimit;
+    USHORT usLowCACLeakage;
+    USHORT usHighCACLeakage;
+    USHORT usMaximumPowerDeliveryLimit;
+    USHORT usTjMax;  // For Fiji, this is also usTemperatureLimitEdge;
+    USHORT usPowerTuneDataSetID;
+    USHORT usEDCLimit;
+    USHORT usSoftwareShutdownTemp;
+    USHORT usClockStretchAmount;
+    USHORT usTemperatureLimitHotspot;  //The following are added for Fiji
+    USHORT usTemperatureLimitLiquid1;
+    USHORT usTemperatureLimitLiquid2;
+    USHORT usTemperatureLimitVrVddc;
+    USHORT usTemperatureLimitVrMvdd;
+    USHORT usTemperatureLimitPlx;
+    UCHAR  ucLiquid1_I2C_address;  //Liquid
+    UCHAR  ucLiquid2_I2C_address;
+    UCHAR  ucLiquid_I2C_Line;
+    UCHAR  ucVr_I2C_address;  //VR
+    UCHAR  ucVr_I2C_Line;
+    UCHAR  ucPlx_I2C_address;  //PLX
+    UCHAR  ucPlx_I2C_Line;
+    USHORT usBoostPowerLimit;
+    UCHAR  ucCKS_LDO_REFSEL;
+    UCHAR  ucHotSpotOnly;
+    UCHAR  ucReserve;
+    USHORT usReserve;
+} ATOM_Polaris_PowerTune_Table;
 
 #define ATOM_PPM_A_A    1
 #define ATOM_PPM_A_I    2

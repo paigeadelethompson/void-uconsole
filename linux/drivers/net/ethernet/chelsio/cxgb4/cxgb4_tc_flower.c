@@ -313,15 +313,15 @@ static int cxgb4_validate_flow_match(struct net_device *dev,
 	u16 ethtype_key = 0;
 
 	if (dissector->used_keys &
-	    ~(BIT(FLOW_DISSECTOR_KEY_CONTROL) |
-	      BIT(FLOW_DISSECTOR_KEY_BASIC) |
-	      BIT(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
-	      BIT(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
-	      BIT(FLOW_DISSECTOR_KEY_PORTS) |
-	      BIT(FLOW_DISSECTOR_KEY_ENC_KEYID) |
-	      BIT(FLOW_DISSECTOR_KEY_VLAN) |
-	      BIT(FLOW_DISSECTOR_KEY_IP))) {
-		netdev_warn(dev, "Unsupported key used: 0x%x\n",
+	    ~(BIT_ULL(FLOW_DISSECTOR_KEY_CONTROL) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_BASIC) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IPV4_ADDRS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IPV6_ADDRS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_PORTS) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_ENC_KEYID) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_VLAN) |
+	      BIT_ULL(FLOW_DISSECTOR_KEY_IP))) {
+		netdev_warn(dev, "Unsupported key used: 0x%llx\n",
 			    dissector->used_keys);
 		return -EOPNOTSUPP;
 	}
@@ -997,20 +997,16 @@ int cxgb4_tc_flower_destroy(struct net_device *dev,
 	if (!ch_flower)
 		return -ENOENT;
 
+	rhashtable_remove_fast(&adap->flower_tbl, &ch_flower->node,
+			       adap->flower_ht_params);
+
 	ret = cxgb4_flow_rule_destroy(dev, ch_flower->fs.tc_prio,
 				      &ch_flower->fs, ch_flower->filter_id);
 	if (ret)
-		goto err;
+		netdev_err(dev, "Flow rule destroy failed for tid: %u, ret: %d",
+			   ch_flower->filter_id, ret);
 
-	ret = rhashtable_remove_fast(&adap->flower_tbl, &ch_flower->node,
-				     adap->flower_ht_params);
-	if (ret) {
-		netdev_err(dev, "Flow remove from rhashtable failed");
-		goto err;
-	}
 	kfree_rcu(ch_flower, rcu);
-
-err:
 	return ret;
 }
 
@@ -1139,7 +1135,7 @@ void cxgb4_cleanup_tc_flower(struct adapter *adap)
 		return;
 
 	if (adap->flower_stats_timer.function)
-		del_timer_sync(&adap->flower_stats_timer);
+		timer_shutdown_sync(&adap->flower_stats_timer);
 	cancel_work_sync(&adap->flower_stats_work);
 	rhashtable_destroy(&adap->flower_tbl);
 	adap->tc_flower_initialized = false;

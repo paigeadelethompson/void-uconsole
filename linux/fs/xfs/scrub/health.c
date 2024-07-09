@@ -1,14 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0+
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
- * Copyright (C) 2019 Oracle.  All Rights Reserved.
- * Author: Darrick J. Wong <darrick.wong@oracle.com>
+ * Copyright (C) 2019-2023 Oracle.  All Rights Reserved.
+ * Author: Darrick J. Wong <djwong@kernel.org>
  */
 #include "xfs.h"
 #include "xfs_fs.h"
 #include "xfs_shared.h"
 #include "xfs_format.h"
+#include "xfs_trans_resv.h"
+#include "xfs_mount.h"
 #include "xfs_btree.h"
-#include "xfs_sb.h"
+#include "xfs_trans_resv.h"
+#include "xfs_mount.h"
+#include "xfs_ag.h"
 #include "xfs_health.h"
 #include "scrub/scrub.h"
 #include "scrub/health.h"
@@ -133,7 +137,8 @@ xchk_update_health(
 	if (!sc->sick_mask)
 		return;
 
-	bad = (sc->sm->sm_flags & XFS_SCRUB_OFLAG_CORRUPT);
+	bad = (sc->sm->sm_flags & (XFS_SCRUB_OFLAG_CORRUPT |
+				   XFS_SCRUB_OFLAG_XCORRUPT));
 	switch (type_to_health_flag[sc->sm->sm_type].group) {
 	case XHG_AG:
 		pag = xfs_perag_get(sc->mp, sc->sm->sm_agno);
@@ -220,6 +225,16 @@ xchk_ag_btree_healthy_enough(
 		ASSERT(0);
 		return true;
 	}
+
+	/*
+	 * If we just repaired some AG metadata, sc->sick_mask will reflect all
+	 * the per-AG metadata types that were repaired.  Exclude these from
+	 * the filesystem health query because we have not yet updated the
+	 * health status and we want everything to be scanned.
+	 */
+	if ((sc->flags & XREP_ALREADY_FIXED) &&
+	    type_to_health_flag[sc->sm->sm_type].group == XHG_AG)
+		mask &= ~sc->sick_mask;
 
 	if (xfs_ag_has_sickness(pag, mask)) {
 		sc->sm->sm_flags |= XFS_SCRUB_OFLAG_XFAIL;

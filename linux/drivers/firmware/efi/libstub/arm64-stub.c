@@ -11,109 +11,60 @@
 #include <asm/efi.h>
 #include <asm/memory.h>
 #include <asm/sections.h>
-#include <asm/sysreg.h>
 
 #include "efistub.h"
-
-efi_status_t check_platform_features(void)
-{
-	u64 tg;
-
-	/* UEFI mandates support for 4 KB granularity, no need to check */
-	if (IS_ENABLED(CONFIG_ARM64_4K_PAGES))
-		return EFI_SUCCESS;
-
-	tg = (read_cpuid(ID_AA64MMFR0_EL1) >> ID_AA64MMFR0_TGRAN_SHIFT) & 0xf;
-	if (tg != ID_AA64MMFR0_TGRAN_SUPPORTED) {
-		if (IS_ENABLED(CONFIG_ARM64_64K_PAGES))
-			efi_err("This 64 KB granular kernel is not supported by your CPU\n");
-		else
-			efi_err("This 16 KB granular kernel is not supported by your CPU\n");
-		return EFI_UNSUPPORTED;
-	}
-	return EFI_SUCCESS;
-}
-
-/*
- * Although relocatable kernels can fix up the misalignment with respect to
- * MIN_KIMG_ALIGN, the resulting virtual text addresses are subtly out of
- * sync with those recorded in the vmlinux when kaslr is disabled but the
- * image required relocation anyway. Therefore retain 2M alignment unless
- * KASLR is in use.
- */
-static u64 min_kimg_align(void)
-{
-	return efi_nokaslr ? MIN_KIMG_ALIGN : EFI_KIMG_ALIGN;
-}
 
 efi_status_t handle_kernel_image(unsigned long *image_addr,
 				 unsigned long *image_size,
 				 unsigned long *reserve_addr,
 				 unsigned long *reserve_size,
-				 efi_loaded_image_t *image)
+				 efi_loaded_image_t *image,
+				 efi_handle_t image_handle)
 {
 	efi_status_t status;
-	unsigned long kernel_size, kernel_memsize = 0;
-	u32 phys_seed = 0;
+	unsigned long kernel_size, kernel_codesize, kernel_memsize;
 
-	if (IS_ENABLED(CONFIG_RANDOMIZE_BASE)) {
-		if (!efi_nokaslr) {
-			status = efi_get_random_bytes(sizeof(phys_seed),
-						      (u8 *)&phys_seed);
-			if (status == EFI_NOT_FOUND) {
-				efi_info("EFI_RNG_PROTOCOL unavailable, KASLR will be disabled\n");
-				efi_nokaslr = true;
-			} else if (status != EFI_SUCCESS) {
-				efi_err("efi_get_random_bytes() failed (0x%lx), KASLR will be disabled\n",
-					status);
-				efi_nokaslr = true;
-			}
-		} else {
-			efi_info("KASLR disabled on kernel command line\n");
-		}
+	if (image->image_base != _text) {
+		efi_err("FIRMWARE BUG: efi_loaded_image_t::image_base has bogus value\n");
+		image->image_base = _text;
 	}
 
-	if (image->image_base != _text)
-		efi_err("FIRMWARE BUG: efi_loaded_image_t::image_base has bogus value\n");
+	if (!IS_ALIGNED((u64)_text, SEGMENT_ALIGN))
+		efi_err("FIRMWARE BUG: kernel image not aligned on %dk boundary\n",
+			SEGMENT_ALIGN >> 10);
 
 	kernel_size = _edata - _text;
+	kernel_codesize = __inittext_end - _text;
 	kernel_memsize = kernel_size + (_end - _edata);
 	*reserve_size = kernel_memsize;
+	*image_addr = (unsigned long)_text;
 
-	if (IS_ENABLED(CONFIG_RANDOMIZE_BASE) && phys_seed != 0) {
-		/*
-		 * If KASLR is enabled, and we have some randomness available,
-		 * locate the kernel at a randomized offset in physical memory.
-		 */
-		status = efi_random_alloc(*reserve_size, min_kimg_align(),
-					  reserve_addr, phys_seed);
-	} else {
-		status = EFI_OUT_OF_RESOURCES;
-	}
-
-	if (status != EFI_SUCCESS) {
-		if (IS_ALIGNED((u64)_text, min_kimg_align())) {
-			/*
-			 * Just execute from wherever we were loaded by the
-			 * UEFI PE/COFF loader if the alignment is suitable.
-			 */
-			*image_addr = (u64)_text;
-			*reserve_size = 0;
-			return EFI_SUCCESS;
-		}
-
-		status = efi_allocate_pages_aligned(*reserve_size, reserve_addr,
-						    ULONG_MAX, min_kimg_align());
-
-		if (status != EFI_SUCCESS) {
-			efi_err("Failed to relocate kernel\n");
-			*reserve_size = 0;
-			return status;
-		}
-	}
-
-	*image_addr = *reserve_addr;
-	memcpy((void *)*image_addr, _text, kernel_size);
+	status = efi_kaslr_relocate_kernel(image_addr,
+					   reserve_addr, reserve_size,
+					   kernel_size, kernel_codesize,
+					   kernel_memsize,
+					   efi_kaslr_get_phys_seed(image_handle));
+	if (status != EFI_SUCCESS)
+		return status;
 
 	return EFI_SUCCESS;
+}
+
+asmlinkage void primary_entry(void);
+
+unsigned long primary_entry_offset(void)
+{
+	/*
+	 * When built as part of the kernel, the EFI stub cannot branch to the
+	 * kernel proper via the image header, as the PE/COFF header is
+	 * strictly not part of the in-memory presentation of the image, only
+	 * of the file representation. So instead, we need to jump to the
+	 * actual entrypoint in the .text region of the image.
+	 */
+	return (char *)primary_entry - _text;
+}
+
+void efi_icache_sync(unsigned long start, unsigned long end)
+{
+	caches_clean_inval_pou(start, end);
 }

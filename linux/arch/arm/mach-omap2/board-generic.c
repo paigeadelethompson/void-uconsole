@@ -9,10 +9,10 @@
  * to support the OMAP2+ device tree boards with an unique board file.
  */
 #include <linux/io.h>
-#include <linux/of_irq.h>
-#include <linux/of_platform.h>
 #include <linux/irqdomain.h>
 #include <linux/clocksource.h>
+#include <linux/clockchips.h>
+#include <linux/mod_devicetable.h>
 
 #include <asm/setup.h>
 #include <asm/mach/arch.h>
@@ -33,7 +33,7 @@ static void __init __maybe_unused omap_generic_init(void)
 }
 
 /* Clocks are needed early, see drivers/clocksource for the rest */
-void __init __maybe_unused omap_init_time_of(void)
+static void __init __maybe_unused omap_init_time_of(void)
 {
 	omap_clk_init();
 	timer_probe();

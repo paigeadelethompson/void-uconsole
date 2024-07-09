@@ -14,12 +14,8 @@ extern char cmd_line[COMMAND_LINE_SIZE];
 
 extern char *klimit;
 
-#   ifdef CONFIG_MMU
 extern void mmu_reset(void);
-#   endif /* CONFIG_MMU */
 
-void time_init(void);
-void init_IRQ(void);
 void machine_early_init(const char *cmdline, unsigned int ram,
 		unsigned int fdt, unsigned int msr, unsigned int tlb0,
 		unsigned int tlb1);
@@ -28,8 +24,6 @@ void machine_restart(char *cmd);
 void machine_shutdown(void);
 void machine_halt(void);
 void machine_power_off(void);
-
-extern void *zalloc_maybe_bootmem(size_t size, gfp_t mask);
 
 # endif /* __ASSEMBLY__ */
 #endif /* _ASM_MICROBLAZE_SETUP_H */

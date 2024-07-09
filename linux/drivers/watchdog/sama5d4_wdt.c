@@ -11,7 +11,6 @@
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_irq.h>
 #include <linux/platform_device.h>
 #include <linux/reboot.h>
@@ -255,6 +254,7 @@ static int sama5d4_wdt_probe(struct platform_device *pdev)
 	struct sama5d4_wdt *wdt;
 	void __iomem *regs;
 	u32 irq = 0;
+	u32 reg;
 	int ret;
 
 	wdt = devm_kzalloc(dev, sizeof(*wdt), GFP_KERNEL);
@@ -268,8 +268,10 @@ static int sama5d4_wdt_probe(struct platform_device *pdev)
 	wdd->min_timeout = MIN_WDT_TIMEOUT;
 	wdd->max_timeout = MAX_WDT_TIMEOUT;
 	wdt->last_ping = jiffies;
-	wdt->sam9x60_support = of_device_is_compatible(dev->of_node,
-						       "microchip,sam9x60-wdt");
+
+	if (of_device_is_compatible(dev->of_node, "microchip,sam9x60-wdt") ||
+	    of_device_is_compatible(dev->of_node, "microchip,sama7g5-wdt"))
+		wdt->sam9x60_support = true;
 
 	watchdog_set_drvdata(wdd, wdt);
 
@@ -303,6 +305,12 @@ static int sama5d4_wdt_probe(struct platform_device *pdev)
 
 	watchdog_init_timeout(wdd, wdt_timeout, dev);
 
+	reg = wdt_read(wdt, AT91_WDT_MR);
+	if (!(reg & AT91_WDT_WDDIS)) {
+		wdt->mr &= ~AT91_WDT_WDDIS;
+		set_bit(WDOG_HW_RUNNING, &wdd->status);
+	}
+
 	ret = sama5d4_wdt_init(wdt);
 	if (ret)
 		return ret;
@@ -329,11 +337,14 @@ static const struct of_device_id sama5d4_wdt_of_match[] = {
 	{
 		.compatible = "microchip,sam9x60-wdt",
 	},
+	{
+		.compatible = "microchip,sama7g5-wdt",
+	},
+
 	{ }
 };
 MODULE_DEVICE_TABLE(of, sama5d4_wdt_of_match);
 
-#ifdef CONFIG_PM_SLEEP
 static int sama5d4_wdt_suspend_late(struct device *dev)
 {
 	struct sama5d4_wdt *wdt = dev_get_drvdata(dev);
@@ -360,18 +371,17 @@ static int sama5d4_wdt_resume_early(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static const struct dev_pm_ops sama5d4_wdt_pm_ops = {
-	SET_LATE_SYSTEM_SLEEP_PM_OPS(sama5d4_wdt_suspend_late,
-			sama5d4_wdt_resume_early)
+	LATE_SYSTEM_SLEEP_PM_OPS(sama5d4_wdt_suspend_late,
+				 sama5d4_wdt_resume_early)
 };
 
 static struct platform_driver sama5d4_wdt_driver = {
 	.probe		= sama5d4_wdt_probe,
 	.driver		= {
 		.name	= "sama5d4_wdt",
-		.pm	= &sama5d4_wdt_pm_ops,
+		.pm	= pm_sleep_ptr(&sama5d4_wdt_pm_ops),
 		.of_match_table = sama5d4_wdt_of_match,
 	}
 };

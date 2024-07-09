@@ -455,43 +455,17 @@ static void cc_trng_startwork_handler(struct work_struct *w)
 	cc_trng_hw_trigger(drvdata);
 }
 
-
-static int cc_trng_clk_init(struct cctrng_drvdata *drvdata)
-{
-	struct clk *clk;
-	struct device *dev = &(drvdata->pdev->dev);
-	int rc = 0;
-
-	clk = devm_clk_get_optional(dev, NULL);
-	if (IS_ERR(clk))
-		return dev_err_probe(dev, PTR_ERR(clk),
-				     "Error getting clock\n");
-
-	drvdata->clk = clk;
-
-	rc = clk_prepare_enable(drvdata->clk);
-	if (rc) {
-		dev_err(dev, "Failed to enable clock\n");
-		return rc;
-	}
-
-	return 0;
-}
-
-static void cc_trng_clk_fini(struct cctrng_drvdata *drvdata)
-{
-	clk_disable_unprepare(drvdata->clk);
-}
-
-
 static int cctrng_probe(struct platform_device *pdev)
 {
-	struct resource *req_mem_cc_regs = NULL;
 	struct cctrng_drvdata *drvdata;
 	struct device *dev = &pdev->dev;
 	int rc = 0;
 	u32 val;
 	int irq;
+
+	/* Compile time assertion checks */
+	BUILD_BUG_ON(CCTRNG_DATA_BUF_WORDS < 6);
+	BUILD_BUG_ON((CCTRNG_DATA_BUF_WORDS & (CCTRNG_DATA_BUF_WORDS-1)) != 0);
 
 	drvdata = devm_kzalloc(dev, sizeof(*drvdata), GFP_KERNEL);
 	if (!drvdata)
@@ -510,40 +484,24 @@ static int cctrng_probe(struct platform_device *pdev)
 
 	drvdata->circ.buf = (char *)drvdata->data_buf;
 
-	/* Get device resources */
-	/* First CC registers space */
-	req_mem_cc_regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	/* Map registers space */
-	drvdata->cc_base = devm_ioremap_resource(dev, req_mem_cc_regs);
-	if (IS_ERR(drvdata->cc_base)) {
-		dev_err(dev, "Failed to ioremap registers");
-		return PTR_ERR(drvdata->cc_base);
-	}
-
-	dev_dbg(dev, "Got MEM resource (%s): %pR\n", req_mem_cc_regs->name,
-		req_mem_cc_regs);
-	dev_dbg(dev, "CC registers mapped from %pa to 0x%p\n",
-		&req_mem_cc_regs->start, drvdata->cc_base);
+	drvdata->cc_base = devm_platform_ioremap_resource(pdev, 0);
+	if (IS_ERR(drvdata->cc_base))
+		return dev_err_probe(dev, PTR_ERR(drvdata->cc_base), "Failed to ioremap registers");
 
 	/* Then IRQ */
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(dev, "Failed getting IRQ resource\n");
+	if (irq < 0)
 		return irq;
-	}
 
 	/* parse sampling rate from device tree */
 	rc = cc_trng_parse_sampling_ratio(drvdata);
-	if (rc) {
-		dev_err(dev, "Failed to get legal sampling ratio for rosc\n");
-		return rc;
-	}
+	if (rc)
+		return dev_err_probe(dev, rc, "Failed to get legal sampling ratio for rosc\n");
 
-	rc = cc_trng_clk_init(drvdata);
-	if (rc) {
-		dev_err(dev, "cc_trng_clk_init failed\n");
-		return rc;
-	}
+	drvdata->clk = devm_clk_get_optional_enabled(dev, NULL);
+	if (IS_ERR(drvdata->clk))
+		return dev_err_probe(dev, PTR_ERR(drvdata->clk),
+				     "Failed to get or enable the clock\n");
 
 	INIT_WORK(&drvdata->compwork, cc_trng_compwork_handler);
 	INIT_WORK(&drvdata->startwork, cc_trng_startwork_handler);
@@ -551,10 +509,8 @@ static int cctrng_probe(struct platform_device *pdev)
 
 	/* register the driver isr function */
 	rc = devm_request_irq(dev, irq, cc_isr, IRQF_SHARED, "cctrng", drvdata);
-	if (rc) {
-		dev_err(dev, "Could not register to interrupt %d\n", irq);
-		goto post_clk_err;
-	}
+	if (rc)
+		return dev_err_probe(dev, rc, "Could not register to interrupt %d\n", irq);
 	dev_dbg(dev, "Registered to IRQ: %d\n", irq);
 
 	/* Clear all pending interrupts */
@@ -569,23 +525,19 @@ static int cctrng_probe(struct platform_device *pdev)
 
 	/* init PM */
 	rc = cc_trng_pm_init(drvdata);
-	if (rc) {
-		dev_err(dev, "cc_trng_pm_init failed\n");
-		goto post_clk_err;
-	}
+	if (rc)
+		return dev_err_probe(dev, rc, "cc_trng_pm_init failed\n");
 
 	/* increment device's usage counter */
 	rc = cc_trng_pm_get(dev);
-	if (rc) {
-		dev_err(dev, "cc_trng_pm_get returned %x\n", rc);
-		goto post_pm_err;
-	}
+	if (rc)
+		return dev_err_probe(dev, rc, "cc_trng_pm_get returned %x\n", rc);
 
 	/* set pending_hw to verify that HW won't be triggered from read */
 	atomic_set(&drvdata->pending_hw, 1);
 
 	/* registration of the hwrng device */
-	rc = hwrng_register(&drvdata->rng);
+	rc = devm_hwrng_register(dev, &drvdata->rng);
 	if (rc) {
 		dev_err(dev, "Could not register hwrng device.\n");
 		goto post_pm_err;
@@ -605,9 +557,6 @@ static int cctrng_probe(struct platform_device *pdev)
 post_pm_err:
 	cc_trng_pm_fini(drvdata);
 
-post_clk_err:
-	cc_trng_clk_fini(drvdata);
-
 	return rc;
 }
 
@@ -618,11 +567,7 @@ static int cctrng_remove(struct platform_device *pdev)
 
 	dev_dbg(dev, "Releasing cctrng resources...\n");
 
-	hwrng_unregister(&drvdata->rng);
-
 	cc_trng_pm_fini(drvdata);
-
-	cc_trng_clk_fini(drvdata);
 
 	dev_info(dev, "ARM cctrng device terminated\n");
 
@@ -712,21 +657,7 @@ static struct platform_driver cctrng_driver = {
 	.remove = cctrng_remove,
 };
 
-static int __init cctrng_mod_init(void)
-{
-	/* Compile time assertion checks */
-	BUILD_BUG_ON(CCTRNG_DATA_BUF_WORDS < 6);
-	BUILD_BUG_ON((CCTRNG_DATA_BUF_WORDS & (CCTRNG_DATA_BUF_WORDS-1)) != 0);
-
-	return platform_driver_register(&cctrng_driver);
-}
-module_init(cctrng_mod_init);
-
-static void __exit cctrng_mod_exit(void)
-{
-	platform_driver_unregister(&cctrng_driver);
-}
-module_exit(cctrng_mod_exit);
+module_platform_driver(cctrng_driver);
 
 /* Module description */
 MODULE_DESCRIPTION("ARM CryptoCell TRNG Driver");

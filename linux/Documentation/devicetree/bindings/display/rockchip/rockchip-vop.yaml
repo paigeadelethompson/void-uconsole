@@ -70,10 +70,7 @@ properties:
       - const: dclk
 
   port:
-    type: object
-    description:
-      A port node with endpoint definitions as defined in
-      Documentation/devicetree/bindings/media/video-interfaces.txt.
+    $ref: /schemas/graph.yaml#/properties/port
 
   assigned-clocks:
     maxItems: 2
@@ -124,11 +121,11 @@ examples:
         #size-cells = <0>;
         vopb_out_edp: endpoint@0 {
           reg = <0>;
-          remote-endpoint=<&edp_in_vopb>;
+          remote-endpoint = <&edp_in_vopb>;
         };
         vopb_out_hdmi: endpoint@1 {
           reg = <1>;
-          remote-endpoint=<&hdmi_in_vopb>;
+          remote-endpoint = <&hdmi_in_vopb>;
         };
       };
     };

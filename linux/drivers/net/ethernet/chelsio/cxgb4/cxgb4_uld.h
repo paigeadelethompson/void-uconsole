@@ -46,6 +46,9 @@
 #define MAX_ULD_QSETS 16
 #define MAX_ULD_NPORTS 4
 
+/* ulp_mem_io + ulptx_idata + payload + padding */
+#define MAX_IMM_ULPTX_WR_LEN (32 + 8 + 256 + 8)
+
 /* CPL message priority levels */
 enum {
 	CPL_PRIORITY_DATA     = 0,  /* data messages */
@@ -493,11 +496,6 @@ struct cxgb4_uld_info {
 	const struct xfrmdev_ops *xfrmdev_ops;
 #endif
 };
-
-static inline bool cxgb4_is_ktls_skb(struct sk_buff *skb)
-{
-	return skb->sk && tls_is_sk_tx_device_offloaded(skb->sk);
-}
 
 void cxgb4_uld_enable(struct adapter *adap);
 void cxgb4_register_uld(enum cxgb4_uld type, const struct cxgb4_uld_info *p);

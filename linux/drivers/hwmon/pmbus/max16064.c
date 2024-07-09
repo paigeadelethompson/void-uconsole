@@ -102,8 +102,7 @@ static struct i2c_driver max16064_driver = {
 	.driver = {
 		   .name = "max16064",
 		   },
-	.probe_new = max16064_probe,
-	.remove = pmbus_do_remove,
+	.probe = max16064_probe,
 	.id_table = max16064_id,
 };
 
@@ -112,3 +111,4 @@ module_i2c_driver(max16064_driver);
 MODULE_AUTHOR("Guenter Roeck");
 MODULE_DESCRIPTION("PMBus driver for Maxim MAX16064");
 MODULE_LICENSE("GPL");
+MODULE_IMPORT_NS(PMBUS);

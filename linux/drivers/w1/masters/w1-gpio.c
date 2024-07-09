@@ -76,6 +76,11 @@ static int w1_gpio_probe(struct platform_device *pdev)
 	enum gpiod_flags gflags = GPIOD_OUT_LOW_OPEN_DRAIN;
 	int err;
 
+	master = devm_kzalloc(dev, sizeof(struct w1_bus_master),
+			GFP_KERNEL);
+	if (!master)
+		return -ENOMEM;
+
 	if (of_have_populated_dt()) {
 		pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 		if (!pdata)
@@ -87,8 +92,11 @@ static int w1_gpio_probe(struct platform_device *pdev)
 		 * driver it high/low like we are in full control of the line and
 		 * open drain will happen transparently.
 		 */
-		if (of_get_property(np, "linux,open-drain", NULL))
+		if (of_property_present(np, "linux,open-drain"))
 			gflags = GPIOD_OUT_LOW;
+
+		if (of_property_present(np, "raspberrypi,delay-needs-poll"))
+			master->delay_needs_poll = true;
 
 		pdev->dev.platform_data = pdata;
 	}
@@ -97,13 +105,6 @@ static int w1_gpio_probe(struct platform_device *pdev)
 	if (!pdata) {
 		dev_err(dev, "No configuration data\n");
 		return -ENXIO;
-	}
-
-	master = devm_kzalloc(dev, sizeof(struct w1_bus_master),
-			GFP_KERNEL);
-	if (!master) {
-		dev_err(dev, "Out of memory\n");
-		return -ENOMEM;
 	}
 
 	pdata->gpiod = devm_gpiod_get_index(dev, NULL, 0, gflags);

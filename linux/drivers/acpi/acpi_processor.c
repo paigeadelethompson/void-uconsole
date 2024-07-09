@@ -9,30 +9,29 @@
  * Copyright (C) 2013, Intel Corporation
  *                     Rafael J. Wysocki <rafael.j.wysocki@intel.com>
  */
+#define pr_fmt(fmt) "ACPI: " fmt
 
 #include <linux/acpi.h>
+#include <linux/cpu.h>
 #include <linux/device.h>
+#include <linux/dmi.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/pci.h>
+#include <linux/platform_device.h>
 
 #include <acpi/processor.h>
 
 #include <asm/cpu.h>
 
+#include <xen/xen.h>
+
 #include "internal.h"
-
-#define _COMPONENT	ACPI_PROCESSOR_COMPONENT
-
-ACPI_MODULE_NAME("processor");
 
 DEFINE_PER_CPU(struct acpi_processor *, processors);
 EXPORT_PER_CPU_SYMBOL(processors);
 
-/* --------------------------------------------------------------------------
-                                Errata Handling
-   -------------------------------------------------------------------------- */
-
+/* Errata Handling */
 struct acpi_processor_errata errata __read_mostly;
 EXPORT_SYMBOL_GPL(errata);
 
@@ -51,19 +50,19 @@ static int acpi_processor_errata_piix4(struct pci_dev *dev)
 
 	switch (dev->revision) {
 	case 0:
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Found PIIX4 A-step\n"));
+		dev_dbg(&dev->dev, "Found PIIX4 A-step\n");
 		break;
 	case 1:
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Found PIIX4 B-step\n"));
+		dev_dbg(&dev->dev, "Found PIIX4 B-step\n");
 		break;
 	case 2:
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Found PIIX4E\n"));
+		dev_dbg(&dev->dev, "Found PIIX4E\n");
 		break;
 	case 3:
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Found PIIX4M\n"));
+		dev_dbg(&dev->dev, "Found PIIX4M\n");
 		break;
 	default:
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Found unknown PIIX4\n"));
+		dev_dbg(&dev->dev, "Found unknown PIIX4\n");
 		break;
 	}
 
@@ -129,11 +128,9 @@ static int acpi_processor_errata_piix4(struct pci_dev *dev)
 	}
 
 	if (errata.piix4.bmisx)
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO,
-				  "Bus master activity detection (BM-IDE) erratum enabled\n"));
+		dev_dbg(&dev->dev, "Bus master activity detection (BM-IDE) erratum enabled\n");
 	if (errata.piix4.fdma)
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO,
-				  "Type-F DMA livelock erratum (C3 disabled)\n"));
+		dev_dbg(&dev->dev, "Type-F DMA livelock erratum (C3 disabled)\n");
 
 	return 0;
 }
@@ -157,10 +154,35 @@ static int acpi_processor_errata(void)
 	return result;
 }
 
-/* --------------------------------------------------------------------------
-                                Initialization
-   -------------------------------------------------------------------------- */
+/* Create a platform device to represent a CPU frequency control mechanism. */
+static void cpufreq_add_device(const char *name)
+{
+	struct platform_device *pdev;
 
+	pdev = platform_device_register_simple(name, PLATFORM_DEVID_NONE, NULL, 0);
+	if (IS_ERR(pdev))
+		pr_info("%s device creation failed: %ld\n", name, PTR_ERR(pdev));
+}
+
+#ifdef CONFIG_X86
+/* Check presence of Processor Clocking Control by searching for \_SB.PCCH. */
+static void __init acpi_pcc_cpufreq_init(void)
+{
+	acpi_status status;
+	acpi_handle handle;
+
+	status = acpi_get_handle(NULL, "\\_SB", &handle);
+	if (ACPI_FAILURE(status))
+		return;
+
+	if (acpi_has_method(handle, "PCCH"))
+		cpufreq_add_device("pcc-cpufreq");
+}
+#else
+static void __init acpi_pcc_cpufreq_init(void) {}
+#endif /* CONFIG_X86 */
+
+/* Initialization */
 #ifdef CONFIG_ACPI_HOTPLUG_CPU
 int __weak acpi_map_cpu(acpi_handle handle,
 		phys_cpuid_t physid, u32 acpi_id, int *pcpu)
@@ -194,7 +216,7 @@ static int acpi_processor_hotadd_init(struct acpi_processor *pr)
 		return -ENODEV;
 
 	cpu_maps_update_begin();
-	cpu_hotplug_begin();
+	cpus_write_lock();
 
 	ret = acpi_map_cpu(pr->handle, pr->phys_id, pr->acpi_id, &pr->id);
 	if (ret)
@@ -215,7 +237,7 @@ static int acpi_processor_hotadd_init(struct acpi_processor *pr)
 	pr->flags.need_hotplug_init = 1;
 
 out:
-	cpu_hotplug_done();
+	cpus_write_unlock();
 	cpu_maps_update_done();
 	return ret;
 }
@@ -244,11 +266,9 @@ static int acpi_processor_get_info(struct acpi_device *device)
 	 */
 	if (acpi_gbl_FADT.pm2_control_block && acpi_gbl_FADT.pm2_control_length) {
 		pr->flags.bm_control = 1;
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO,
-				  "Bus mastering arbitration control present\n"));
+		dev_dbg(&device->dev, "Bus mastering arbitration control present\n");
 	} else
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO,
-				  "No bus mastering arbitration control\n"));
+		dev_dbg(&device->dev, "No bus mastering arbitration control\n");
 
 	if (!strcmp(acpi_device_hid(device), ACPI_PROCESSOR_OBJECT_HID)) {
 		/* Declared with "Processor" statement; match ProcessorID */
@@ -291,17 +311,25 @@ static int acpi_processor_get_info(struct acpi_device *device)
 	pr->phys_id = acpi_get_phys_id(pr->handle, device_declaration,
 					pr->acpi_id);
 	if (invalid_phys_cpuid(pr->phys_id))
-		acpi_handle_debug(pr->handle, "failed to get CPU physical ID.\n");
+		dev_dbg(&device->dev, "Failed to get CPU physical ID.\n");
 
 	pr->id = acpi_map_cpuid(pr->phys_id, pr->acpi_id);
-	if (!cpu0_initialized && !acpi_has_cpu_in_madt()) {
+	if (!cpu0_initialized) {
 		cpu0_initialized = 1;
 		/*
 		 * Handle UP system running SMP kernel, with no CPU
 		 * entry in MADT
 		 */
-		if (invalid_logical_cpuid(pr->id) && (num_online_cpus() == 1))
+		if (!acpi_has_cpu_in_madt() && invalid_logical_cpuid(pr->id) &&
+		    (num_online_cpus() == 1))
 			pr->id = 0;
+		/*
+		 * Check availability of Processor Performance Control by
+		 * looking at the presence of the _PCT object under the first
+		 * processor definition.
+		 */
+		if (acpi_has_method(pr->handle, "_PCT"))
+			cpufreq_add_device("acpi-cpufreq");
 	}
 
 	/*
@@ -314,6 +342,7 @@ static int acpi_processor_get_info(struct acpi_device *device)
 	 */
 	if (invalid_logical_cpuid(pr->id) || !cpu_present(pr->id)) {
 		int ret = acpi_processor_hotadd_init(pr);
+
 		if (ret)
 			return ret;
 	}
@@ -328,11 +357,10 @@ static int acpi_processor_get_info(struct acpi_device *device)
 	 * CPU+CPU ID.
 	 */
 	sprintf(acpi_device_bid(device), "CPU%X", pr->id);
-	ACPI_DEBUG_PRINT((ACPI_DB_INFO, "Processor [%d:%d]\n", pr->id,
-			  pr->acpi_id));
+	dev_dbg(&device->dev, "Processor [%d:%d]\n", pr->id, pr->acpi_id);
 
 	if (!object.processor.pblk_address)
-		ACPI_DEBUG_PRINT((ACPI_DB_INFO, "No PBLK (NULL address)\n"));
+		dev_dbg(&device->dev, "No PBLK (NULL address)\n");
 	else if (object.processor.pblk_length != 6)
 		dev_err(&device->dev, "Invalid PBLK length [%d]\n",
 			    object.processor.pblk_length);
@@ -440,10 +468,7 @@ static int acpi_processor_add(struct acpi_device *device,
 }
 
 #ifdef CONFIG_ACPI_HOTPLUG_CPU
-/* --------------------------------------------------------------------------
-                                    Removal
-   -------------------------------------------------------------------------- */
-
+/* Removal */
 static void acpi_processor_remove(struct acpi_device *device)
 {
 	struct acpi_processor *pr;
@@ -471,13 +496,13 @@ static void acpi_processor_remove(struct acpi_device *device)
 	per_cpu(processors, pr->id) = NULL;
 
 	cpu_maps_update_begin();
-	cpu_hotplug_begin();
+	cpus_write_lock();
 
 	/* Remove the CPU. */
 	arch_unregister_cpu(pr->id);
 	acpi_unmap_cpu(pr->id);
 
-	cpu_hotplug_done();
+	cpus_write_unlock();
 	cpu_maps_update_done();
 
 	try_offline_node(cpu_to_node(pr->id));
@@ -488,54 +513,110 @@ static void acpi_processor_remove(struct acpi_device *device)
 }
 #endif /* CONFIG_ACPI_HOTPLUG_CPU */
 
-#ifdef CONFIG_X86
-static bool acpi_hwp_native_thermal_lvt_set;
-static acpi_status __init acpi_hwp_native_thermal_lvt_osc(acpi_handle handle,
-							  u32 lvl,
-							  void *context,
-							  void **rv)
+#ifdef CONFIG_ARCH_MIGHT_HAVE_ACPI_PDC
+bool __init processor_physically_present(acpi_handle handle)
 {
-	u8 sb_uuid_str[] = "4077A616-290C-47BE-9EBD-D87058713953";
-	u32 capbuf[2];
+	int cpuid, type;
+	u32 acpi_id;
+	acpi_status status;
+	acpi_object_type acpi_type;
+	unsigned long long tmp;
+	union acpi_object object = {};
+	struct acpi_buffer buffer = { sizeof(union acpi_object), &object };
+
+	status = acpi_get_type(handle, &acpi_type);
+	if (ACPI_FAILURE(status))
+		return false;
+
+	switch (acpi_type) {
+	case ACPI_TYPE_PROCESSOR:
+		status = acpi_evaluate_object(handle, NULL, NULL, &buffer);
+		if (ACPI_FAILURE(status))
+			return false;
+		acpi_id = object.processor.proc_id;
+		break;
+	case ACPI_TYPE_DEVICE:
+		status = acpi_evaluate_integer(handle, METHOD_NAME__UID,
+					       NULL, &tmp);
+		if (ACPI_FAILURE(status))
+			return false;
+		acpi_id = tmp;
+		break;
+	default:
+		return false;
+	}
+
+	if (xen_initial_domain())
+		/*
+		 * When running as a Xen dom0 the number of processors Linux
+		 * sees can be different from the real number of processors on
+		 * the system, and we still need to execute _PDC or _OSC for
+		 * all of them.
+		 */
+		return xen_processor_present(acpi_id);
+
+	type = (acpi_type == ACPI_TYPE_DEVICE) ? 1 : 0;
+	cpuid = acpi_get_cpuid(handle, type, acpi_id);
+
+	return !invalid_logical_cpuid(cpuid);
+}
+
+/* vendor specific UUID indicating an Intel platform */
+static u8 sb_uuid_str[] = "4077A616-290C-47BE-9EBD-D87058713953";
+
+static acpi_status __init acpi_processor_osc(acpi_handle handle, u32 lvl,
+					     void *context, void **rv)
+{
+	u32 capbuf[2] = {};
 	struct acpi_osc_context osc_context = {
 		.uuid_str = sb_uuid_str,
 		.rev = 1,
 		.cap.length = 8,
 		.cap.pointer = capbuf,
 	};
+	acpi_status status;
 
-	if (acpi_hwp_native_thermal_lvt_set)
-		return AE_CTRL_TERMINATE;
+	if (!processor_physically_present(handle))
+		return AE_OK;
 
-	capbuf[0] = 0x0000;
-	capbuf[1] = 0x1000; /* set bit 12 */
+	arch_acpi_set_proc_cap_bits(&capbuf[OSC_SUPPORT_DWORD]);
 
-	if (ACPI_SUCCESS(acpi_run_osc(handle, &osc_context))) {
-		if (osc_context.ret.pointer && osc_context.ret.length > 1) {
-			u32 *capbuf_ret = osc_context.ret.pointer;
+	status = acpi_run_osc(handle, &osc_context);
+	if (ACPI_FAILURE(status))
+		return status;
 
-			if (capbuf_ret[1] & 0x1000) {
-				acpi_handle_info(handle,
-					"_OSC native thermal LVT Acked\n");
-				acpi_hwp_native_thermal_lvt_set = true;
-			}
-		}
-		kfree(osc_context.ret.pointer);
-	}
+	kfree(osc_context.ret.pointer);
 
 	return AE_OK;
 }
 
-void __init acpi_early_processor_osc(void)
+static bool __init acpi_early_processor_osc(void)
 {
-	if (boot_cpu_has(X86_FEATURE_HWP)) {
-		acpi_walk_namespace(ACPI_TYPE_PROCESSOR, ACPI_ROOT_OBJECT,
-				    ACPI_UINT32_MAX,
-				    acpi_hwp_native_thermal_lvt_osc,
-				    NULL, NULL, NULL);
-		acpi_get_devices(ACPI_PROCESSOR_DEVICE_HID,
-				 acpi_hwp_native_thermal_lvt_osc,
-				 NULL, NULL);
+	acpi_status status;
+
+	acpi_proc_quirk_mwait_check();
+
+	status = acpi_walk_namespace(ACPI_TYPE_PROCESSOR, ACPI_ROOT_OBJECT,
+				     ACPI_UINT32_MAX, acpi_processor_osc, NULL,
+				     NULL, NULL);
+	if (ACPI_FAILURE(status))
+		return false;
+
+	status = acpi_get_devices(ACPI_PROCESSOR_DEVICE_HID, acpi_processor_osc,
+				  NULL, NULL);
+	if (ACPI_FAILURE(status))
+		return false;
+
+	return true;
+}
+
+void __init acpi_early_processor_control_setup(void)
+{
+	if (acpi_early_processor_osc()) {
+		pr_info("_OSC evaluated successfully for all CPUs\n");
+	} else {
+		pr_info("_OSC evaluation for CPUs failed, trying _PDC\n");
+		acpi_early_processor_set_pdc();
 	}
 }
 #endif
@@ -703,6 +784,7 @@ void __init acpi_processor_init(void)
 	acpi_processor_check_duplicates();
 	acpi_scan_add_handler_with_hotplug(&processor_handler, "processor");
 	acpi_scan_add_handler(&processor_container_handler);
+	acpi_pcc_cpufreq_init();
 }
 
 #ifdef CONFIG_ACPI_PROCESSOR_CSTATE
@@ -901,7 +983,7 @@ int acpi_processor_evaluate_cst(acpi_handle handle, u32 cpu,
 
 	info->count = last_index;
 
-      end:
+end:
 	kfree(buffer.pointer);
 
 	return ret;

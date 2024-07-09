@@ -221,7 +221,7 @@ static int orangefs_inode_is_stale(struct inode *inode,
 	 * If the inode type or symlink target have changed then this
 	 * inode is stale.
 	 */
-	if (type == -1 || !(inode->i_mode & type)) {
+	if (type == -1 || inode_wrong_type(inode, type)) {
 		orangefs_make_bad_inode(inode);
 		return 1;
 	}
@@ -361,11 +361,11 @@ again2:
 	    downcall.resp.getattr.attributes.atime;
 	inode->i_mtime.tv_sec = (time64_t)new_op->
 	    downcall.resp.getattr.attributes.mtime;
-	inode->i_ctime.tv_sec = (time64_t)new_op->
-	    downcall.resp.getattr.attributes.ctime;
+	inode_set_ctime(inode,
+			(time64_t)new_op->downcall.resp.getattr.attributes.ctime,
+			0);
 	inode->i_atime.tv_nsec = 0;
 	inode->i_mtime.tv_nsec = 0;
-	inode->i_ctime.tv_nsec = 0;
 
 	/* special case: mark the root inode as sticky */
 	inode->i_mode = type | (is_root_handle(inode) ? S_ISVTX : 0) |

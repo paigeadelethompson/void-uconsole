@@ -80,6 +80,35 @@ static int vfs_parse_sb_flag(struct fs_context *fc, const char *key)
 }
 
 /**
+ * vfs_parse_fs_param_source - Handle setting "source" via parameter
+ * @fc: The filesystem context to modify
+ * @param: The parameter
+ *
+ * This is a simple helper for filesystems to verify that the "source" they
+ * accept is sane.
+ *
+ * Returns 0 on success, -ENOPARAM if this is not  "source" parameter, and
+ * -EINVAL otherwise. In the event of failure, supplementary error information
+ *  is logged.
+ */
+int vfs_parse_fs_param_source(struct fs_context *fc, struct fs_parameter *param)
+{
+	if (strcmp(param->key, "source") != 0)
+		return -ENOPARAM;
+
+	if (param->type != fs_value_is_string)
+		return invalf(fc, "Non-string source");
+
+	if (fc->source)
+		return invalf(fc, "Multiple sources");
+
+	fc->source = param->string;
+	param->string = NULL;
+	return 0;
+}
+EXPORT_SYMBOL(vfs_parse_fs_param_source);
+
+/**
  * vfs_parse_fs_param - Add a single parameter to a superblock config
  * @fc: The filesystem context to modify
  * @param: The parameter
@@ -122,15 +151,9 @@ int vfs_parse_fs_param(struct fs_context *fc, struct fs_parameter *param)
 	/* If the filesystem doesn't take any arguments, give it the
 	 * default handling of source.
 	 */
-	if (strcmp(param->key, "source") == 0) {
-		if (param->type != fs_value_is_string)
-			return invalf(fc, "VFS: Non-string source");
-		if (fc->source)
-			return invalf(fc, "VFS: Multiple sources");
-		fc->source = param->string;
-		param->string = NULL;
-		return 0;
-	}
+	ret = vfs_parse_fs_param_source(fc, param);
+	if (ret != -ENOPARAM)
+		return ret;
 
 	return invalf(fc, "%s: Unknown parameter '%s'",
 		      fc->fs_type->name, param->key);
@@ -139,6 +162,10 @@ EXPORT_SYMBOL(vfs_parse_fs_param);
 
 /**
  * vfs_parse_fs_string - Convenience function to just parse a string.
+ * @fc: Filesystem context.
+ * @key: Parameter name.
+ * @value: Default value.
+ * @v_size: Maximum number of bytes in the value.
  */
 int vfs_parse_fs_string(struct fs_context *fc, const char *key,
 			const char *value, size_t v_size)
@@ -165,17 +192,19 @@ int vfs_parse_fs_string(struct fs_context *fc, const char *key,
 EXPORT_SYMBOL(vfs_parse_fs_string);
 
 /**
- * generic_parse_monolithic - Parse key[=val][,key[=val]]* mount data
- * @ctx: The superblock configuration to fill in.
+ * vfs_parse_monolithic_sep - Parse key[=val][,key[=val]]* mount data
+ * @fc: The superblock configuration to fill in.
  * @data: The data to parse
+ * @sep: callback for separating next option
  *
- * Parse a blob of data that's in key[=val][,key[=val]]* form.  This can be
- * called from the ->monolithic_mount_data() fs_context operation.
+ * Parse a blob of data that's in key[=val][,key[=val]]* form with a custom
+ * option separator callback.
  *
  * Returns 0 on success or the error returned by the ->parse_option() fs_context
  * operation on failure.
  */
-int generic_parse_monolithic(struct fs_context *fc, void *data)
+int vfs_parse_monolithic_sep(struct fs_context *fc, void *data,
+			     char *(*sep)(char **))
 {
 	char *options = data, *key;
 	int ret = 0;
@@ -187,7 +216,7 @@ int generic_parse_monolithic(struct fs_context *fc, void *data)
 	if (ret)
 		return ret;
 
-	while ((key = strsep(&options, ",")) != NULL) {
+	while ((key = sep(&options)) != NULL) {
 		if (*key) {
 			size_t v_len = 0;
 			char *value = strchr(key, '=');
@@ -205,6 +234,28 @@ int generic_parse_monolithic(struct fs_context *fc, void *data)
 	}
 
 	return ret;
+}
+EXPORT_SYMBOL(vfs_parse_monolithic_sep);
+
+static char *vfs_parse_comma_sep(char **s)
+{
+	return strsep(s, ",");
+}
+
+/**
+ * generic_parse_monolithic - Parse key[=val][,key[=val]]* mount data
+ * @fc: The superblock configuration to fill in.
+ * @data: The data to parse
+ *
+ * Parse a blob of data that's in key[=val][,key[=val]]* form.  This can be
+ * called from the ->monolithic_mount_data() fs_context operation.
+ *
+ * Returns 0 on success or the error returned by the ->parse_option() fs_context
+ * operation on failure.
+ */
+int generic_parse_monolithic(struct fs_context *fc, void *data)
+{
+	return vfs_parse_monolithic_sep(fc, data, vfs_parse_comma_sep);
 }
 EXPORT_SYMBOL(generic_parse_monolithic);
 
@@ -231,7 +282,7 @@ static struct fs_context *alloc_fs_context(struct file_system_type *fs_type,
 	struct fs_context *fc;
 	int ret = -ENOMEM;
 
-	fc = kzalloc(sizeof(struct fs_context), GFP_KERNEL);
+	fc = kzalloc(sizeof(struct fs_context), GFP_KERNEL_ACCOUNT);
 	if (!fc)
 		return ERR_PTR(-ENOMEM);
 
@@ -292,10 +343,31 @@ struct fs_context *fs_context_for_reconfigure(struct dentry *dentry,
 }
 EXPORT_SYMBOL(fs_context_for_reconfigure);
 
+/**
+ * fs_context_for_submount: allocate a new fs_context for a submount
+ * @type: file_system_type of the new context
+ * @reference: reference dentry from which to copy relevant info
+ *
+ * Allocate a new fs_context suitable for a submount. This also ensures that
+ * the fc->security object is inherited from @reference (if needed).
+ */
 struct fs_context *fs_context_for_submount(struct file_system_type *type,
 					   struct dentry *reference)
 {
-	return alloc_fs_context(type, reference, 0, 0, FS_CONTEXT_FOR_SUBMOUNT);
+	struct fs_context *fc;
+	int ret;
+
+	fc = alloc_fs_context(type, reference, 0, 0, FS_CONTEXT_FOR_SUBMOUNT);
+	if (IS_ERR(fc))
+		return fc;
+
+	ret = security_fs_context_submount(fc, reference->d_sb);
+	if (ret) {
+		put_fs_context(fc);
+		return ERR_PTR(ret);
+	}
+
+	return fc;
 }
 EXPORT_SYMBOL(fs_context_for_submount);
 
@@ -310,7 +382,7 @@ void fc_drop_locked(struct fs_context *fc)
 static void legacy_fs_context_free(struct fs_context *fc);
 
 /**
- * vfs_dup_fc_config: Duplicate a filesystem context.
+ * vfs_dup_fs_context - Duplicate a filesystem context.
  * @src_fc: The context to copy.
  */
 struct fs_context *vfs_dup_fs_context(struct fs_context *src_fc)
@@ -356,7 +428,9 @@ EXPORT_SYMBOL(vfs_dup_fs_context);
 
 /**
  * logfc - Log a message to a filesystem context
- * @fc: The filesystem context to log to.
+ * @log: The filesystem context to log to, or NULL to use printk.
+ * @prefix: A string to prefix the output with, or NULL.
+ * @level: 'w' for a warning, 'e' for an error.  Anything else is a notice.
  * @fmt: The format of the buffer.
  */
 void logfc(struct fc_log *log, const char *prefix, char level, const char *fmt, ...)
@@ -504,16 +578,11 @@ static int legacy_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	struct legacy_fs_context *ctx = fc->fs_private;
 	unsigned int size = ctx->data_size;
 	size_t len = 0;
+	int ret;
 
-	if (strcmp(param->key, "source") == 0) {
-		if (param->type != fs_value_is_string)
-			return invalf(fc, "VFS: Legacy: Non-string source");
-		if (fc->source)
-			return invalf(fc, "VFS: Legacy: Multiple sources");
-		fc->source = param->string;
-		param->string = NULL;
-		return 0;
-	}
+	ret = vfs_parse_fs_param_source(fc, param);
+	if (ret != -ENOPARAM)
+		return ret;
 
 	if (ctx->param_type == LEGACY_FS_MONOLITHIC_PARAMS)
 		return invalf(fc, "VFS: Legacy: Can't mix monolithic and individual options");
@@ -530,7 +599,7 @@ static int legacy_parse_param(struct fs_context *fc, struct fs_parameter *param)
 			      param->key);
 	}
 
-	if (len > PAGE_SIZE - 2 - size)
+	if (size + len + 2 > PAGE_SIZE)
 		return invalf(fc, "VFS: Legacy: Cumulative options too large");
 	if (strchr(param->key, ',') ||
 	    (param->type == fs_value_is_string &&
@@ -543,7 +612,8 @@ static int legacy_parse_param(struct fs_context *fc, struct fs_parameter *param)
 			return -ENOMEM;
 	}
 
-	ctx->legacy_data[size++] = ',';
+	if (size)
+		ctx->legacy_data[size++] = ',';
 	len = strlen(param->key);
 	memcpy(ctx->legacy_data + size, param->key, len);
 	size += len;
@@ -631,7 +701,7 @@ const struct fs_context_operations legacy_fs_context_ops = {
  */
 static int legacy_init_fs_context(struct fs_context *fc)
 {
-	fc->fs_private = kzalloc(sizeof(struct legacy_fs_context), GFP_KERNEL);
+	fc->fs_private = kzalloc(sizeof(struct legacy_fs_context), GFP_KERNEL_ACCOUNT);
 	if (!fc->fs_private)
 		return -ENOMEM;
 	fc->ops = &legacy_fs_context_ops;
@@ -673,6 +743,7 @@ void vfs_clean_context(struct fs_context *fc)
 	security_free_mnt_opts(&fc->security);
 	kfree(fc->source);
 	fc->source = NULL;
+	fc->exclusive = false;
 
 	fc->purpose = FS_CONTEXT_FOR_RECONFIGURE;
 	fc->phase = FS_CONTEXT_AWAITING_RECONF;

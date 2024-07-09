@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
- * Broadcom BM2835 V4L2 driver
+ * Broadcom BCM2835 V4L2 driver
  *
  * Copyright © 2013 Raspberry Pi (Trading) Ltd.
  *
@@ -23,15 +23,26 @@
 #include <linux/slab.h>
 #include <linux/completion.h>
 #include <linux/vmalloc.h>
-#include <linux/raspberrypi/vchiq.h>
 #include <media/videobuf2-vmalloc.h>
 
+#include "../include/linux/raspberrypi/vchiq.h"
 #include "mmal-common.h"
 #include "mmal-parameters.h"
 #include "mmal-vchiq.h"
 #include "mmal-msg.h"
 
-#include "vc-sm-cma/vc_sm_knl.h"
+#include "../vc-sm-cma/vc_sm_knl.h"
+
+#define pr_dbg_lvl(__level, __debug, __fmt, __arg...)		\
+	do {							\
+		if (__debug >= (__level))			\
+			printk(KERN_DEBUG __fmt, ##__arg);	\
+	} while (0)
+
+static unsigned int debug;
+module_param(debug, uint, 0644);
+MODULE_PARM_DESC(debug, "activates debug info (0-3)");
+
 /*
  * maximum number of components supported.
  * This matches the maximum permitted by default on the VPU
@@ -172,9 +183,6 @@ struct vchiq_mmal_instance {
 	/* ensure serialised access to service */
 	struct mutex vchiq_mutex;
 
-	/* vmalloc page to receive scratch bulk xfers into */
-	void *bulk_scratch;
-
 	struct idr context_map;
 	/* protect accesses to context_map */
 	struct mutex context_map_lock;
@@ -240,7 +248,7 @@ release_msg_context(struct mmal_msg_context *msg_context)
 /* workqueue scheduled callback
  *
  * we do this because it is important we do not call any other vchiq
- * sync calls from witin the message delivery thread
+ * sync calls from within the message delivery thread
  */
 static void buffer_work_cb(struct work_struct *work)
 {
@@ -292,8 +300,8 @@ static void buffer_to_host_work_cb(struct work_struct *work)
 		/* Dummy receive to ensure the buffers remain in order */
 		len = 8;
 	/* queue the bulk submission */
-	vchiq_use_service(instance->service_handle);
-	ret = vchiq_bulk_receive(instance->service_handle,
+	vchiq_use_service(instance->vchiq_instance, instance->service_handle);
+	ret = vchiq_bulk_receive(instance->vchiq_instance, instance->service_handle,
 				 msg_context->u.bulk.buffer->buffer,
 				 /* Actual receive needs to be a multiple
 				  * of 4 bytes
@@ -302,7 +310,7 @@ static void buffer_to_host_work_cb(struct work_struct *work)
 				msg_context,
 				VCHIQ_BULK_MODE_CALLBACK);
 
-	vchiq_release_service(instance->service_handle);
+	vchiq_release_service(instance->vchiq_instance, instance->service_handle);
 
 	if (ret != 0)
 		pr_err("%s: ctx: %p, vchiq_bulk_receive failed %d\n",
@@ -382,7 +390,8 @@ buffer_from_host(struct vchiq_mmal_instance *instance,
 	if (!port->enabled)
 		return -EINVAL;
 
-	pr_debug("instance:%u buffer:%p\n", instance->service_handle, buf);
+	pr_dbg_lvl(3, debug, "instance:%u buffer:%p\n",
+		   instance->service_handle, buf);
 
 	/* get context */
 	if (!buf->msg_context) {
@@ -443,22 +452,22 @@ buffer_from_host(struct vchiq_mmal_instance *instance,
 		m.u.buffer_from_host.buffer_header.dts = buf->dts;
 	}
 
-	/* clear buffer type sepecific data */
+	/* clear buffer type specific data */
 	memset(&m.u.buffer_from_host.buffer_header_type_specific, 0,
 	       sizeof(m.u.buffer_from_host.buffer_header_type_specific));
 
 	/* no payload in message */
 	m.u.buffer_from_host.payload_in_message = 0;
 
-	vchiq_use_service(instance->service_handle);
+	vchiq_use_service(instance->vchiq_instance, instance->service_handle);
 
-	ret = vchiq_queue_kernel_message(instance->service_handle, &m,
+	ret = vchiq_queue_kernel_message(instance->vchiq_instance, instance->service_handle, &m,
 					 sizeof(struct mmal_msg_header) +
 					 sizeof(m.u.buffer_from_host));
 	if (ret)
 		atomic_dec(&port->buffers_with_vpu);
 
-	vchiq_release_service(instance->service_handle);
+	vchiq_release_service(instance->vchiq_instance, instance->service_handle);
 
 	return ret;
 }
@@ -550,11 +559,11 @@ static void event_to_host_cb(struct vchiq_mmal_instance *instance,
 		msg_context->u.bulk.pts = MMAL_TIME_UNKNOWN;
 		msg_context->u.bulk.cmd = msg->u.event_to_host.cmd;
 
-		pr_debug("event component:%u port type:%d num:%d cmd:0x%x length:%d\n",
-			 msg->u.event_to_host.client_component,
-			 msg->u.event_to_host.port_type,
-			 msg->u.event_to_host.port_num,
-			 msg->u.event_to_host.cmd, msg->u.event_to_host.length);
+		pr_dbg_lvl(3, debug, "event component:%u port type:%d num:%d cmd:0x%x length:%d\n",
+			   msg->u.event_to_host.client_component,
+			   msg->u.event_to_host.port_type,
+			   msg->u.event_to_host.port_num,
+			   msg->u.event_to_host.cmd, msg->u.event_to_host.length);
 	}
 
 	schedule_work(&msg_context->u.bulk.work);
@@ -567,8 +576,8 @@ static void buffer_to_host_cb(struct vchiq_mmal_instance *instance,
 	struct mmal_msg_context *msg_context;
 	u32 handle;
 
-	pr_debug("%s: instance:%p msg:%p msg_len:%d\n",
-		 __func__, instance, msg, msg_len);
+	pr_dbg_lvl(3, debug, "%s: instance:%p msg:%p msg_len:%d\n",
+		   __func__, instance, msg, msg_len);
 
 	if (msg->u.buffer_from_host.drvbuf.magic == MMAL_MAGIC) {
 		handle = msg->u.buffer_from_host.drvbuf.client_context;
@@ -675,18 +684,18 @@ static void bulk_abort_cb(struct vchiq_mmal_instance *instance,
 }
 
 /* incoming event service callback */
-static enum vchiq_status service_callback(enum vchiq_reason reason,
-					  struct vchiq_header *header,
-					  unsigned int handle, void *bulk_ctx)
+static int service_callback(struct vchiq_instance *vchiq_instance,
+			    enum vchiq_reason reason, struct vchiq_header *header,
+			    unsigned int handle, void *bulk_ctx)
 {
-	struct vchiq_mmal_instance *instance = vchiq_get_service_userdata(handle);
+	struct vchiq_mmal_instance *instance = vchiq_get_service_userdata(vchiq_instance, handle);
 	u32 msg_len;
 	struct mmal_msg *msg;
 	struct mmal_msg_context *msg_context;
 
 	if (!instance) {
 		pr_err("Message callback passed NULL instance\n");
-		return VCHIQ_SUCCESS;
+		return 0;
 	}
 
 	switch (reason) {
@@ -699,25 +708,25 @@ static enum vchiq_status service_callback(enum vchiq_reason reason,
 		/* handling is different for buffer messages */
 		switch (msg->h.type) {
 		case MMAL_MSG_TYPE_BUFFER_FROM_HOST:
-			vchiq_release_message(handle, header);
+			vchiq_release_message(vchiq_instance, handle, header);
 			break;
 
 		case MMAL_MSG_TYPE_EVENT_TO_HOST:
 			event_to_host_cb(instance, msg, msg_len);
-			vchiq_release_message(handle, header);
+			vchiq_release_message(vchiq_instance, handle, header);
 
 			break;
 
 		case MMAL_MSG_TYPE_BUFFER_TO_HOST:
 			buffer_to_host_cb(instance, msg, msg_len);
-			vchiq_release_message(handle, header);
+			vchiq_release_message(vchiq_instance, handle, header);
 			break;
 
 		default:
 			/* messages dependent on header context to complete */
 			if (!msg->h.context) {
 				pr_err("received message context was null!\n");
-				vchiq_release_message(handle, header);
+				vchiq_release_message(vchiq_instance, handle, header);
 				break;
 			}
 
@@ -726,7 +735,7 @@ static enum vchiq_status service_callback(enum vchiq_reason reason,
 			if (!msg_context) {
 				pr_err("received invalid message context %u!\n",
 				       msg->h.context);
-				vchiq_release_message(handle, header);
+				vchiq_release_message(vchiq_instance, handle, header);
 				break;
 			}
 
@@ -770,7 +779,7 @@ static enum vchiq_status service_callback(enum vchiq_reason reason,
 		break;
 	}
 
-	return VCHIQ_SUCCESS;
+	return 0;
 }
 
 static int send_synchronous_mmal_msg(struct vchiq_mmal_instance *instance,
@@ -805,13 +814,13 @@ static int send_synchronous_mmal_msg(struct vchiq_mmal_instance *instance,
 	DBG_DUMP_MSG(msg, (sizeof(struct mmal_msg_header) + payload_len),
 		     ">>> sync message");
 
-	vchiq_use_service(instance->service_handle);
+	vchiq_use_service(instance->vchiq_instance, instance->service_handle);
 
-	ret = vchiq_queue_kernel_message(instance->service_handle, msg,
+	ret = vchiq_queue_kernel_message(instance->vchiq_instance, instance->service_handle, msg,
 					 sizeof(struct mmal_msg_header) +
 					 payload_len);
 
-	vchiq_release_service(instance->service_handle);
+	vchiq_release_service(instance->vchiq_instance, instance->service_handle);
 
 	if (ret) {
 		pr_err("error %d queuing message\n", ret);
@@ -838,42 +847,45 @@ static int send_synchronous_mmal_msg(struct vchiq_mmal_instance *instance,
 
 static void dump_port_info(struct vchiq_mmal_port *port)
 {
-	pr_debug("port handle:0x%x enabled:%d\n", port->handle, port->enabled);
+	pr_dbg_lvl(3, debug, "port handle:0x%x enabled:%d\n", port->handle,
+		   port->enabled);
 
-	pr_debug("buffer minimum num:%d size:%d align:%d\n",
-		 port->minimum_buffer.num,
-		 port->minimum_buffer.size, port->minimum_buffer.alignment);
+	pr_dbg_lvl(3, debug, "buffer minimum num:%d size:%d align:%d\n",
+		   port->minimum_buffer.num,
+		   port->minimum_buffer.size, port->minimum_buffer.alignment);
 
-	pr_debug("buffer recommended num:%d size:%d align:%d\n",
-		 port->recommended_buffer.num,
-		 port->recommended_buffer.size,
-		 port->recommended_buffer.alignment);
+	pr_dbg_lvl(3, debug, "buffer recommended num:%d size:%d align:%d\n",
+		   port->recommended_buffer.num,
+		   port->recommended_buffer.size,
+		   port->recommended_buffer.alignment);
 
-	pr_debug("buffer current values num:%d size:%d align:%d\n",
-		 port->current_buffer.num,
-		 port->current_buffer.size, port->current_buffer.alignment);
+	pr_dbg_lvl(3, debug, "buffer current values num:%d size:%d align:%d\n",
+		   port->current_buffer.num,
+		   port->current_buffer.size, port->current_buffer.alignment);
 
-	pr_debug("elementary stream: type:%d encoding:0x%x variant:0x%x\n",
-		 port->format.type,
-		 port->format.encoding, port->format.encoding_variant);
+	pr_dbg_lvl(3, debug, "elementary stream: type:%d encoding:0x%x variant:0x%x\n",
+		   port->format.type,
+		   port->format.encoding, port->format.encoding_variant);
 
-	pr_debug("		    bitrate:%d flags:0x%x\n",
-		 port->format.bitrate, port->format.flags);
+	pr_dbg_lvl(3, debug, "		    bitrate:%d flags:0x%x\n",
+		   port->format.bitrate, port->format.flags);
 
 	if (port->format.type == MMAL_ES_TYPE_VIDEO) {
-		pr_debug
-		    ("es video format: width:%d height:%d colourspace:0x%x\n",
+		pr_dbg_lvl(3, debug,
+		    "es video format: width:%d height:%d colourspace:0x%x\n",
 		     port->es.video.width, port->es.video.height,
 		     port->es.video.color_space);
 
-		pr_debug("		 : crop xywh %d,%d,%d,%d\n",
+		pr_dbg_lvl(3, debug,
+			 "		 : crop xywh %d,%d,%d,%d\n",
 			 port->es.video.crop.x,
 			 port->es.video.crop.y,
 			 port->es.video.crop.width, port->es.video.crop.height);
-		pr_debug("		 : framerate %d/%d  aspect %d/%d\n",
-			 port->es.video.frame_rate.num,
-			 port->es.video.frame_rate.den,
-			 port->es.video.par.num, port->es.video.par.den);
+		pr_dbg_lvl(3, debug,
+			 "		 : framerate %d/%d  aspect %d/%d\n",
+			 port->es.video.frame_rate.numerator,
+			 port->es.video.frame_rate.denominator,
+			 port->es.video.par.numerator, port->es.video.par.denominator);
 	}
 }
 
@@ -904,7 +916,7 @@ static int port_info_set(struct vchiq_mmal_instance *instance,
 	struct mmal_msg *rmsg;
 	struct vchiq_header *rmsg_handle;
 
-	pr_debug("setting port info port %p\n", port);
+	pr_dbg_lvl(1, debug, "setting port info port %p\n", port);
 	if (!port)
 		return -1;
 	dump_port_info(port);
@@ -947,11 +959,11 @@ static int port_info_set(struct vchiq_mmal_instance *instance,
 	/* return operation status */
 	ret = -rmsg->u.port_info_get_reply.status;
 
-	pr_debug("%s:result:%d component:0x%x port:%d\n", __func__, ret,
-		 port->component->handle, port->handle);
+	pr_dbg_lvl(1, debug, "%s:result:%d component:0x%x port:%d\n", __func__,
+		   ret, port->component->handle, port->handle);
 
 release_msg:
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
@@ -989,9 +1001,9 @@ static int port_info_get(struct vchiq_mmal_instance *instance,
 		goto release_msg;
 
 	if (rmsg->u.port_info_get_reply.port.is_enabled == 0)
-		port->enabled = 0;
+		port->enabled = false;
 	else
-		port->enabled = 1;
+		port->enabled = true;
 
 	/* copy the values out of the message */
 	port->handle = rmsg->u.port_info_get_reply.port_handle;
@@ -1038,20 +1050,20 @@ static int port_info_get(struct vchiq_mmal_instance *instance,
 	       rmsg->u.port_info_get_reply.extradata,
 	       port->format.extradata_size);
 
-	pr_debug("received port info\n");
+	pr_dbg_lvl(1, debug, "received port info\n");
 	dump_port_info(port);
 
 release_msg:
 
-	pr_debug("%s:result:%d component:0x%x port:%d\n",
-		 __func__, ret, port->component->handle, port->handle);
+	pr_dbg_lvl(1, debug, "%s:result:%d component:0x%x port:%d\n",
+		   __func__, ret, port->component->handle, port->handle);
 
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
 
-/* create comonent on vc */
+/* create component on vc */
 static int create_component(struct vchiq_mmal_instance *instance,
 			    struct vchiq_mmal_component *component,
 			    const char *name)
@@ -1064,8 +1076,9 @@ static int create_component(struct vchiq_mmal_instance *instance,
 	/* build component create message */
 	m.h.type = MMAL_MSG_TYPE_COMPONENT_CREATE;
 	m.u.component_create.client_component = component->client_component;
-	strncpy(m.u.component_create.name, name,
-		sizeof(m.u.component_create.name));
+	strscpy_pad(m.u.component_create.name, name,
+		    sizeof(m.u.component_create.name));
+	m.u.component_create.pid = 0;
 
 	ret = send_synchronous_mmal_msg(instance, &m,
 					sizeof(m.u.component_create),
@@ -1089,12 +1102,12 @@ static int create_component(struct vchiq_mmal_instance *instance,
 	component->outputs = rmsg->u.component_create_reply.output_num;
 	component->clocks = rmsg->u.component_create_reply.clock_num;
 
-	pr_debug("Component handle:0x%x in:%d out:%d clock:%d\n",
-		 component->handle,
-		 component->inputs, component->outputs, component->clocks);
+	pr_dbg_lvl(2, debug, "Component handle:0x%x in:%d out:%d clock:%d\n",
+		   component->handle,
+		   component->inputs, component->outputs, component->clocks);
 
 release_msg:
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
@@ -1127,7 +1140,7 @@ static int destroy_component(struct vchiq_mmal_instance *instance,
 
 release_msg:
 
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
@@ -1159,7 +1172,7 @@ static int enable_component(struct vchiq_mmal_instance *instance,
 	ret = -rmsg->u.component_enable_reply.status;
 
 release_msg:
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
@@ -1192,7 +1205,7 @@ static int disable_component(struct vchiq_mmal_instance *instance,
 
 release_msg:
 
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
@@ -1224,7 +1237,7 @@ static int get_version(struct vchiq_mmal_instance *instance,
 	*minor_out = rmsg->u.version.minor;
 
 release_msg:
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
@@ -1260,13 +1273,12 @@ static int port_action_port(struct vchiq_mmal_instance *instance,
 
 	ret = -rmsg->u.port_action_reply.status;
 
-	pr_debug("%s:result:%d component:0x%x port:%d action:%s(%d)\n",
-		 __func__,
-		 ret, port->component->handle, port->handle,
-		 port_action_type_names[action_type], action_type);
+	pr_dbg_lvl(2, debug, "%s:result:%d component:0x%x port:%d action:%s(%d)\n",
+		   __func__, ret, port->component->handle, port->handle,
+		   port_action_type_names[action_type], action_type);
 
 release_msg:
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
@@ -1307,14 +1319,14 @@ static int port_action_handle(struct vchiq_mmal_instance *instance,
 
 	ret = -rmsg->u.port_action_reply.status;
 
-	pr_debug("%s:result:%d component:0x%x port:%d action:%s(%d) connect component:0x%x connect port:%d\n",
-		 __func__,
-		 ret, port->component->handle, port->handle,
-		 port_action_type_names[action_type],
-		 action_type, connect_component_handle, connect_port_handle);
+	pr_dbg_lvl(2, debug,
+		   "%s:result:%d component:0x%x port:%d action:%s(%d) connect component:0x%x connect port:%d\n",
+		   __func__, ret, port->component->handle, port->handle,
+		   port_action_type_names[action_type],
+		   action_type, connect_component_handle, connect_port_handle);
 
 release_msg:
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
@@ -1350,12 +1362,12 @@ static int port_parameter_set(struct vchiq_mmal_instance *instance,
 
 	ret = -rmsg->u.port_parameter_set_reply.status;
 
-	pr_debug("%s:result:%d component:0x%x port:%d parameter:%d\n",
-		 __func__,
-		 ret, port->component->handle, port->handle, parameter_id);
+	pr_dbg_lvl(1, debug, "%s:result:%d component:0x%x port:%d parameter:%d\n",
+		   __func__, ret, port->component->handle, port->handle,
+		   parameter_id);
 
 release_msg:
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
@@ -1410,11 +1422,12 @@ static int port_parameter_get(struct vchiq_mmal_instance *instance,
 	/* Always report the size of the returned parameter to the caller */
 	*value_size = rmsg->u.port_parameter_get_reply.size;
 
-	pr_debug("%s:result:%d component:0x%x port:%d parameter:%d\n", __func__,
-		 ret, port->component->handle, port->handle, parameter_id);
+	pr_dbg_lvl(1, debug, "%s:result:%d component:0x%x port:%d parameter:%d\n",
+		   __func__, ret, port->component->handle, port->handle,
+		   parameter_id);
 
 release_msg:
-	vchiq_release_message(instance->service_handle, rmsg_handle);
+	vchiq_release_message(instance->vchiq_instance, instance->service_handle, rmsg_handle);
 
 	return ret;
 }
@@ -1430,7 +1443,7 @@ static int port_disable(struct vchiq_mmal_instance *instance,
 	if (!port->enabled)
 		return 0;
 
-	port->enabled = 0;
+	port->enabled = false;
 
 	ret = port_action_port(instance, port,
 			       MMAL_MSG_PORT_ACTION_TYPE_DISABLE);
@@ -1486,7 +1499,9 @@ static int port_enable(struct vchiq_mmal_instance *instance,
 	if (ret)
 		goto done;
 
-	port->enabled = 1;
+	port->enabled = true;
+
+	atomic_set(&port->buffers_with_vpu, 0);
 
 	if (port->buffer_cb) {
 		/* send buffer headers to videocore */
@@ -1661,14 +1676,14 @@ int vchiq_mmal_port_connect_tunnel(struct vchiq_mmal_instance *instance,
 			pr_err("failed disconnecting src port\n");
 			goto release_unlock;
 		}
-		src->connected->enabled = 0;
+		src->connected->enabled = false;
 		src->connected = NULL;
 	}
 
 	if (!dst) {
 		/* do not make new connection */
 		ret = 0;
-		pr_debug("not making new connection\n");
+		pr_dbg_lvl(3, debug, "not making new connection\n");
 		goto release_unlock;
 	}
 
@@ -1680,20 +1695,20 @@ int vchiq_mmal_port_connect_tunnel(struct vchiq_mmal_instance *instance,
 	dst->es.video.crop.y = src->es.video.crop.y;
 	dst->es.video.crop.width = src->es.video.crop.width;
 	dst->es.video.crop.height = src->es.video.crop.height;
-	dst->es.video.frame_rate.num = src->es.video.frame_rate.num;
-	dst->es.video.frame_rate.den = src->es.video.frame_rate.den;
+	dst->es.video.frame_rate.numerator = src->es.video.frame_rate.numerator;
+	dst->es.video.frame_rate.denominator = src->es.video.frame_rate.denominator;
 
 	/* set new format */
 	ret = port_info_set(instance, dst);
 	if (ret) {
-		pr_debug("setting port info failed\n");
+		pr_dbg_lvl(1, debug, "setting port info failed\n");
 		goto release_unlock;
 	}
 
 	/* read what has actually been set */
 	ret = port_info_get(instance, dst);
 	if (ret) {
-		pr_debug("read back port info failed\n");
+		pr_dbg_lvl(1, debug, "read back port info failed\n");
 		goto release_unlock;
 	}
 
@@ -1702,9 +1717,9 @@ int vchiq_mmal_port_connect_tunnel(struct vchiq_mmal_instance *instance,
 				 MMAL_MSG_PORT_ACTION_TYPE_CONNECT,
 				 dst->component->handle, dst->handle);
 	if (ret < 0) {
-		pr_debug("connecting port %d:%d to %d:%d failed\n",
-			 src->component->handle, src->handle,
-			 dst->component->handle, dst->handle);
+		pr_dbg_lvl(2, debug, "connecting port %d:%d to %d:%d failed\n",
+			   src->component->handle, src->handle,
+			   dst->component->handle, dst->handle);
 		goto release_unlock;
 	}
 	src->connected = dst;
@@ -1729,7 +1744,8 @@ int vchiq_mmal_submit_buffer(struct vchiq_mmal_instance *instance,
 	 * videobuf2 won't let us have the dmabuf there.
 	 */
 	if (port->zero_copy && buffer->dma_buf && !buffer->vcsm_handle) {
-		pr_debug("%s: import dmabuf %p\n", __func__, buffer->dma_buf);
+		pr_dbg_lvl(2, debug, "%s: import dmabuf %p\n",
+			   __func__, buffer->dma_buf);
 		ret = vc_sm_cma_import_dmabuf(buffer->dma_buf,
 					      &buffer->vcsm_handle);
 		if (ret) {
@@ -1745,8 +1761,8 @@ int vchiq_mmal_submit_buffer(struct vchiq_mmal_instance *instance,
 			vc_sm_cma_free(buffer->vcsm_handle);
 			return ret;
 		}
-		pr_debug("%s: import dmabuf %p - got vc handle %08X\n",
-			 __func__, buffer->dma_buf, buffer->vc_handle);
+		pr_dbg_lvl(2, debug, "%s: import dmabuf %p - got vc handle %08X\n",
+			   __func__, buffer->dma_buf, buffer->vc_handle);
 	}
 
 	ret = buffer_from_host(instance, port, buffer);
@@ -1785,8 +1801,8 @@ int mmal_vchi_buffer_cleanup(struct mmal_buffer *buf)
 	if (buf->vcsm_handle) {
 		int ret;
 
-		pr_debug("%s: vc_sm_cma_free on handle %p\n", __func__,
-			 buf->vcsm_handle);
+		pr_dbg_lvl(2, debug, "%s: vc_sm_cma_free on handle %p\n", __func__,
+			   buf->vcsm_handle);
 		ret = vc_sm_cma_free(buf->vcsm_handle);
 		if (ret)
 			pr_err("%s: vcsm_free failed, ret %d\n", __func__, ret);
@@ -1867,7 +1883,7 @@ int vchiq_mmal_component_init(struct vchiq_mmal_instance *instance,
 	for (idx = 0; idx < VCHIQ_MMAL_MAX_COMPONENTS; idx++) {
 		if (!instance->component[idx].in_use) {
 			component = &instance->component[idx];
-			component->in_use = 1;
+			component->in_use = true;
 			break;
 		}
 	}
@@ -1948,7 +1964,7 @@ release_component:
 	release_all_event_contexts(component);
 unlock:
 	if (component)
-		component->in_use = 0;
+		component->in_use = false;
 	mutex_unlock(&instance->vchiq_mutex);
 
 	return ret;
@@ -1971,7 +1987,7 @@ int vchiq_mmal_component_finalise(struct vchiq_mmal_instance *instance,
 
 	ret = destroy_component(instance, component);
 
-	component->in_use = 0;
+	component->in_use = false;
 
 	release_all_event_contexts(component);
 
@@ -2025,7 +2041,7 @@ int vchiq_mmal_component_disable(struct vchiq_mmal_instance *instance,
 
 	ret = disable_component(instance, component);
 	if (ret == 0)
-		component->enabled = 0;
+		component->enabled = false;
 
 	mutex_unlock(&instance->vchiq_mutex);
 
@@ -2059,19 +2075,16 @@ int vchiq_mmal_finalise(struct vchiq_mmal_instance *instance)
 	if (mutex_lock_interruptible(&instance->vchiq_mutex))
 		return -EINTR;
 
-	vchiq_use_service(instance->service_handle);
+	vchiq_use_service(instance->vchiq_instance, instance->service_handle);
 
-	status = vchiq_close_service(instance->service_handle);
+	status = vchiq_close_service(instance->vchiq_instance, instance->service_handle);
 	if (status != 0)
 		pr_err("mmal-vchiq: VCHIQ close failed\n");
 
 	mutex_unlock(&instance->vchiq_mutex);
 
 	vchiq_shutdown(instance->vchiq_instance);
-	flush_workqueue(instance->bulk_wq);
 	destroy_workqueue(instance->bulk_wq);
-
-	vfree(instance->bulk_scratch);
 
 	idr_destroy(&instance->context_map);
 
@@ -2132,7 +2145,6 @@ int vchiq_mmal_init(struct vchiq_mmal_instance **out_instance)
 
 	mutex_init(&instance->vchiq_mutex);
 
-	instance->bulk_scratch = vmalloc(PAGE_SIZE);
 	instance->vchiq_instance = vchiq_instance;
 
 	mutex_init(&instance->context_map_lock);
@@ -2153,17 +2165,16 @@ int vchiq_mmal_init(struct vchiq_mmal_instance **out_instance)
 		goto err_close_services;
 	}
 
-	vchiq_release_service(instance->service_handle);
+	vchiq_release_service(instance->vchiq_instance, instance->service_handle);
 
 	*out_instance = instance;
 
 	return 0;
 
 err_close_services:
-	vchiq_close_service(instance->service_handle);
+	vchiq_close_service(instance->vchiq_instance, instance->service_handle);
 	destroy_workqueue(instance->bulk_wq);
 err_free:
-	vfree(instance->bulk_scratch);
 	kfree(instance);
 err_shutdown_vchiq:
 	vchiq_shutdown(vchiq_instance);

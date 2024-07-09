@@ -32,12 +32,16 @@ sed -e 's/^\[[^]]*]//' < $i/console.log |
 awk '
 /-scale: .* gps: .* batches:/ {
 	ngps = $9;
-	nbatches = $11;
+	nbatches = 1;
 }
 
 /-scale: .*writer-duration/ {
 	gptimes[++n] = $5 / 1000.;
 	sum += $5 / 1000.;
+}
+
+/rcu_scale: Grace-period kthread CPU time/ {
+	cputime = $6;
 }
 
 END {
@@ -78,6 +82,8 @@ END {
 	print "90th percentile grace-period duration: " gptimes[pct90];
 	print "99th percentile grace-period duration: " gptimes[pct99];
 	print "Maximum grace-period duration: " gptimes[newNR];
-	print "Grace periods: " ngps + 0 " Batches: " nbatches + 0 " Ratio: " ngps / nbatches;
+	if (cputime != "")
+		cpustr = " CPU: " cputime;
+	print "Grace periods: " ngps + 0 " Batches: " nbatches + 0 " Ratio: " ngps / nbatches cpustr;
 	print "Computed from rcuscale printk output.";
 }'

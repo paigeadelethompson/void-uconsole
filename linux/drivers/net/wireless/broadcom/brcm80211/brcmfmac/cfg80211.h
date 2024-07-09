@@ -179,6 +179,21 @@ enum brcmf_vif_status {
 };
 
 /**
+ * enum brcmf_mgmt_tx_status - mgmt frame tx status
+ *
+ * @BRCMF_MGMT_TX_ACK: mgmt frame acked
+ * @BRCMF_MGMT_TX_NOACK: mgmt frame not acked
+ * @BRCMF_MGMT_TX_OFF_CHAN_COMPLETED: off-channel complete
+ * @BRCMF_MGMT_TX_SEND_FRAME: mgmt frame tx is in progres
+ */
+enum brcmf_mgmt_tx_status {
+	BRCMF_MGMT_TX_ACK,
+	BRCMF_MGMT_TX_NOACK,
+	BRCMF_MGMT_TX_OFF_CHAN_COMPLETED,
+	BRCMF_MGMT_TX_SEND_FRAME
+};
+
+/**
  * struct vif_saved_ie - holds saved IEs for a virtual interface.
  *
  * @probe_req_ie: IE info for probe request.
@@ -213,6 +228,9 @@ struct vif_saved_ie {
  * @list: linked list.
  * @mgmt_rx_reg: registered rx mgmt frame types.
  * @mbss: Multiple BSS type, set if not first AP (not relevant for P2P).
+ * @cqm_rssi_low: Lower RSSI limit for CQM monitoring
+ * @cqm_rssi_high: Upper RSSI limit for CQM monitoring
+ * @cqm_rssi_last: Last RSSI reading for CQM monitoring
  */
 struct brcmf_cfg80211_vif {
 	struct brcmf_if *ifp;
@@ -221,9 +239,15 @@ struct brcmf_cfg80211_vif {
 	unsigned long sme_state;
 	struct vif_saved_ie saved_ie;
 	struct list_head list;
+	struct completion mgmt_tx;
+	unsigned long mgmt_tx_status;
+	u32 mgmt_tx_id;
 	u16 mgmt_rx_reg;
 	bool mbss;
 	int is_11d;
+	s32 cqm_rssi_low;
+	s32 cqm_rssi_high;
+	s32 cqm_rssi_last;
 };
 
 /* association inform */
@@ -377,7 +401,7 @@ struct brcmf_cfg80211_info {
 struct brcmf_tlv {
 	u8 id;
 	u8 len;
-	u8 data[1];
+	u8 data[];
 };
 
 static inline struct wiphy *cfg_to_wiphy(struct brcmf_cfg80211_info *cfg)
@@ -461,5 +485,7 @@ s32 brcmf_notify_escan_complete(struct brcmf_cfg80211_info *cfg,
 void brcmf_set_mpc(struct brcmf_if *ndev, int mpc);
 void brcmf_abort_scanning(struct brcmf_cfg80211_info *cfg);
 void brcmf_cfg80211_free_netdev(struct net_device *ndev);
+
+int brcmf_set_wsec(struct brcmf_if *ifp, const u8 *key, u16 key_len, u16 flags);
 
 #endif /* BRCMFMAC_CFG80211_H */

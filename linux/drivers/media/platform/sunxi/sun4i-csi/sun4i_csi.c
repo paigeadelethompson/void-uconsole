@@ -12,7 +12,6 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of.h>
-#include <linux/of_device.h>
 #include <linux/of_graph.h>
 #include <linux/platform_device.h>
 #include <linux/pm_runtime.h>
@@ -42,7 +41,7 @@ static const struct media_entity_operations sun4i_csi_video_entity_ops = {
 
 static int sun4i_csi_notify_bound(struct v4l2_async_notifier *notifier,
 				  struct v4l2_subdev *subdev,
-				  struct v4l2_async_subdev *asd)
+				  struct v4l2_async_connection *asd)
 {
 	struct sun4i_csi *csi = container_of(notifier, struct sun4i_csi,
 					     notifier);
@@ -118,10 +117,11 @@ static int sun4i_csi_notifier_init(struct sun4i_csi *csi)
 	struct v4l2_fwnode_endpoint vep = {
 		.bus_type = V4L2_MBUS_PARALLEL,
 	};
+	struct v4l2_async_connection *asd;
 	struct fwnode_handle *ep;
 	int ret;
 
-	v4l2_async_notifier_init(&csi->notifier);
+	v4l2_async_nf_init(&csi->notifier, &csi->v4l);
 
 	ep = fwnode_graph_get_endpoint_by_id(dev_fwnode(csi->dev), 0, 0,
 					     FWNODE_GRAPH_ENDPOINT_NEXT);
@@ -134,10 +134,12 @@ static int sun4i_csi_notifier_init(struct sun4i_csi *csi)
 
 	csi->bus = vep.bus.parallel;
 
-	ret = v4l2_async_notifier_add_fwnode_remote_subdev(&csi->notifier,
-							   ep, &csi->asd);
-	if (ret)
+	asd = v4l2_async_nf_add_fwnode_remote(&csi->notifier, ep,
+					      struct v4l2_async_connection);
+	if (IS_ERR(asd)) {
+		ret = PTR_ERR(asd);
 		goto out;
+	}
 
 	csi->notifier.ops = &sun4i_csi_notify_ops;
 
@@ -151,7 +153,6 @@ static int sun4i_csi_probe(struct platform_device *pdev)
 	struct v4l2_subdev *subdev;
 	struct video_device *vdev;
 	struct sun4i_csi *csi;
-	struct resource *res;
 	int ret;
 	int irq;
 
@@ -167,44 +168,14 @@ static int sun4i_csi_probe(struct platform_device *pdev)
 	if (!csi->traits)
 		return -EINVAL;
 
-	/*
-	 * On Allwinner SoCs, some high memory bandwidth devices do DMA
-	 * directly over the memory bus (called MBUS), instead of the
-	 * system bus. The memory bus has a different addressing scheme
-	 * without the DRAM starting offset.
-	 *
-	 * In some cases this can be described by an interconnect in
-	 * the device tree. In other cases where the hardware is not
-	 * fully understood and the interconnect is left out of the
-	 * device tree, fall back to a default offset.
-	 */
-	if (of_find_property(csi->dev->of_node, "interconnects", NULL)) {
-		ret = of_dma_configure(csi->dev, csi->dev->of_node, true);
-		if (ret)
-			return ret;
-	} else {
-		/*
-		 * XXX(hch): this has no business in a driver and needs to move
-		 * to the device tree.
-		 */
-#ifdef PHYS_PFN_OFFSET
-		ret = dma_direct_set_offset(csi->dev, PHYS_OFFSET, 0, SZ_4G);
-		if (ret)
-			return ret;
-#endif
-	}
-
 	csi->mdev.dev = csi->dev;
 	strscpy(csi->mdev.model, "Allwinner Video Capture Device",
 		sizeof(csi->mdev.model));
 	csi->mdev.hw_revision = 0;
-	snprintf(csi->mdev.bus_info, sizeof(csi->mdev.bus_info), "platform:%s",
-		 dev_name(csi->dev));
 	media_device_init(&csi->mdev);
 	csi->v4l.mdev = &csi->mdev;
 
-	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	csi->regs = devm_ioremap_resource(&pdev->dev, res);
+	csi->regs = devm_platform_ioremap_resource(pdev, 0);
 	if (IS_ERR(csi->regs))
 		return PTR_ERR(csi->regs);
 
@@ -268,7 +239,7 @@ static int sun4i_csi_probe(struct platform_device *pdev)
 	if (ret)
 		goto err_unregister_media;
 
-	ret = v4l2_async_notifier_register(&csi->v4l, &csi->notifier);
+	ret = v4l2_async_nf_register(&csi->notifier);
 	if (ret) {
 		dev_err(csi->dev, "Couldn't register our notifier.\n");
 		goto err_unregister_media;
@@ -288,18 +259,17 @@ err_clean_pad:
 	return ret;
 }
 
-static int sun4i_csi_remove(struct platform_device *pdev)
+static void sun4i_csi_remove(struct platform_device *pdev)
 {
 	struct sun4i_csi *csi = platform_get_drvdata(pdev);
 
-	v4l2_async_notifier_unregister(&csi->notifier);
-	v4l2_async_notifier_cleanup(&csi->notifier);
+	pm_runtime_disable(&pdev->dev);
+	v4l2_async_nf_unregister(&csi->notifier);
+	v4l2_async_nf_cleanup(&csi->notifier);
 	vb2_video_unregister_device(&csi->vdev);
 	media_device_unregister(&csi->mdev);
 	sun4i_csi_dma_unregister(csi);
 	media_device_cleanup(&csi->mdev);
-
-	return 0;
 }
 
 static const struct sun4i_csi_traits sun4i_a10_csi1_traits = {
@@ -357,7 +327,7 @@ static const struct dev_pm_ops sun4i_csi_pm_ops = {
 
 static struct platform_driver sun4i_csi_driver = {
 	.probe	= sun4i_csi_probe,
-	.remove	= sun4i_csi_remove,
+	.remove_new = sun4i_csi_remove,
 	.driver	= {
 		.name		= "sun4i-csi",
 		.of_match_table	= sun4i_csi_of_match,

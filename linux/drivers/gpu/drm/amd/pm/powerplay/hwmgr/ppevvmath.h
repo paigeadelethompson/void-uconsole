@@ -166,7 +166,7 @@ static fInt fNaturalLog(fInt value)
 
 	error_term = fAdd(fNegativeOne, value);
 
-	return (fAdd(solution, error_term));
+	return fAdd(solution, error_term);
 }
 
 static fInt fDecodeLinearFuse(uint32_t fuse_value, fInt f_min, fInt f_range, uint32_t bitlength)
@@ -230,7 +230,7 @@ static fInt ConvertToFraction(int X) /*Add all range checking here. Is it possib
 static fInt fNegate(fInt X)
 {
 	fInt CONSTANT_NEGONE = ConvertToFraction(-1);
-	return (fMultiply(X, CONSTANT_NEGONE));
+	return fMultiply(X, CONSTANT_NEGONE);
 }
 
 static fInt Convert_ULONG_ToFraction(uint32_t X)
@@ -333,13 +333,13 @@ static fInt fMultiply (fInt X, fInt Y) /* Uses 64-bit integers (int64_t) */
 {
 	fInt Product;
 	int64_t tempProduct;
+
+	/*The following is for a very specific common case: Non-zero number with ONLY fractional portion*/
+	/* TEMPORARILY DISABLED - CAN BE USED TO IMPROVE PRECISION
 	bool X_LessThanOne, Y_LessThanOne;
 
 	X_LessThanOne = (X.partial.real == 0 && X.partial.decimal != 0 && X.full >= 0);
 	Y_LessThanOne = (Y.partial.real == 0 && Y.partial.decimal != 0 && Y.full >= 0);
-
-	/*The following is for a very specific common case: Non-zero number with ONLY fractional portion*/
-	/* TEMPORARILY DISABLED - CAN BE USED TO IMPROVE PRECISION
 
 	if (X_LessThanOne && Y_LessThanOne) {
 		Product.full = X.full * Y.full;
@@ -382,14 +382,14 @@ static int ConvertBackToInteger (fInt A) /*THIS is the function that will be use
 
 	scaledDecimal.full = uGetScaledDecimal(A);
 
-	fullNumber = fAdd(scaledDecimal,scaledReal);
+	fullNumber = fAdd(scaledDecimal, scaledReal);
 
 	return fullNumber.full;
 }
 
 static fInt fGetSquare(fInt A)
 {
-	return fMultiply(A,A);
+	return fMultiply(A, A);
 }
 
 /* x_new = x_old - (x_old^2 - C) / (2 * x_old) */
@@ -447,7 +447,7 @@ static fInt fSqrt(fInt num)
 
 	} while (uAbs(error) > 0);
 
-	return (x_new);
+	return x_new;
 }
 
 static void SolveQuadracticEqn(fInt A, fInt B, fInt C, fInt Roots[])
@@ -459,7 +459,7 @@ static void SolveQuadracticEqn(fInt A, fInt B, fInt C, fInt Roots[])
 	f_CONSTANT100 = ConvertToFraction(100);
 	f_CONSTANT10 = ConvertToFraction(10);
 
-	while(GreaterThan(A, f_CONSTANT100) || GreaterThan(B, f_CONSTANT100) || GreaterThan(C, f_CONSTANT100)) {
+	while (GreaterThan(A, f_CONSTANT100) || GreaterThan(B, f_CONSTANT100) || GreaterThan(C, f_CONSTANT100)) {
 		A = fDivide(A, f_CONSTANT10);
 		B = fDivide(B, f_CONSTANT10);
 		C = fDivide(C, f_CONSTANT10);
@@ -515,7 +515,7 @@ static int uGetScaledDecimal (fInt A) /*Converts the fractional portion to whole
 		dec[i] = tmp / (1 << SHIFT_AMOUNT);
 		tmp = tmp - ((1 << SHIFT_AMOUNT)*dec[i]);
 		tmp *= 10;
-		scaledDecimal = scaledDecimal + dec[i]*uPow(10, PRECISION - 1 -i);
+		scaledDecimal = scaledDecimal + dec[i]*uPow(10, PRECISION - 1 - i);
 	}
 
 	return scaledDecimal;

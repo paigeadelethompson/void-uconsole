@@ -17,6 +17,8 @@ Introduction
    busses/index
    i2c-topology
    muxes/i2c-mux-gpio
+   i2c-sysfs
+   i2c-address-translators
 
 Writing device drivers
 ======================

@@ -19,13 +19,13 @@
 #include <linux/module.h>
 #include <linux/of_platform.h>
 #include <linux/platform_device.h>
-#include <linux/pm_runtime.h>
 #include <linux/reset.h>
 
 #include <drm/drm_drv.h>
-#include <drm/drm_fb_cma_helper.h>
-#include <drm/drm_fb_helper.h>
 #include <drm/drm_managed.h>
+
+#include <soc/bcm2835/raspberrypi-firmware.h>
+
 #include <uapi/drm/v3d_drm.h>
 
 #include "v3d_drv.h"
@@ -37,42 +37,6 @@
 #define DRIVER_MAJOR 1
 #define DRIVER_MINOR 0
 #define DRIVER_PATCHLEVEL 0
-
-#ifdef CONFIG_PM
-static int v3d_runtime_suspend(struct device *dev)
-{
-	struct drm_device *drm = dev_get_drvdata(dev);
-	struct v3d_dev *v3d = to_v3d_dev(drm);
-
-	v3d_irq_disable(v3d);
-
-	clk_disable_unprepare(v3d->clk);
-
-	return 0;
-}
-
-static int v3d_runtime_resume(struct device *dev)
-{
-	struct drm_device *drm = dev_get_drvdata(dev);
-	struct v3d_dev *v3d = to_v3d_dev(drm);
-	int ret;
-
-	ret = clk_prepare_enable(v3d->clk);
-	if (ret != 0)
-		return ret;
-
-	/* XXX: VPM base */
-
-	v3d_mmu_set_page_table(v3d);
-	v3d_irq_enable(v3d);
-
-	return 0;
-}
-#endif
-
-static const struct dev_pm_ops v3d_pm_ops = {
-	SET_RUNTIME_PM_OPS(v3d_runtime_suspend, v3d_runtime_resume, NULL)
-};
 
 static int v3d_get_param_ioctl(struct drm_device *dev, void *data,
 			       struct drm_file *file_priv)
@@ -113,7 +77,6 @@ static int v3d_get_param_ioctl(struct drm_device *dev, void *data,
 		return 0;
 	}
 
-
 	switch (args->param) {
 	case DRM_V3D_PARAM_SUPPORTS_TFU:
 		args->value = 1;
@@ -122,6 +85,12 @@ static int v3d_get_param_ioctl(struct drm_device *dev, void *data,
 		args->value = v3d_has_csd(v3d);
 		return 0;
 	case DRM_V3D_PARAM_SUPPORTS_CACHE_FLUSH:
+		args->value = 1;
+		return 0;
+	case DRM_V3D_PARAM_SUPPORTS_PERFMON:
+		args->value = (v3d->ver >= 40);
+		return 0;
+	case DRM_V3D_PARAM_SUPPORTS_MULTISYNC_EXT:
 		args->value = 1;
 		return 0;
 	default:
@@ -151,6 +120,7 @@ v3d_open(struct drm_device *dev, struct drm_file *file)
 				      1, NULL);
 	}
 
+	v3d_perfmon_open_file(v3d_priv);
 	file->driver_priv = v3d_priv;
 
 	return 0;
@@ -162,17 +132,17 @@ v3d_postclose(struct drm_device *dev, struct drm_file *file)
 	struct v3d_file_priv *v3d_priv = file->driver_priv;
 	enum v3d_queue q;
 
-	for (q = 0; q < V3D_MAX_QUEUES; q++) {
+	for (q = 0; q < V3D_MAX_QUEUES; q++)
 		drm_sched_entity_destroy(&v3d_priv->sched_entity[q]);
-	}
 
+	v3d_perfmon_close_file(v3d_priv);
 	kfree(v3d_priv);
 }
 
 DEFINE_DRM_GEM_FOPS(v3d_drm_fops);
 
 /* DRM_AUTH is required on SUBMIT_CL for now, while we don't have GMP
- * protection between clients.  Note that render nodes would be be
+ * protection between clients.  Note that render nodes would be
  * able to submit CLs that could access BOs from clients authenticated
  * with the master node.  The TFU doesn't use the GMP, so it would
  * need to stay DRM_AUTH until we do buffer size/offset validation.
@@ -186,9 +156,12 @@ static const struct drm_ioctl_desc v3d_drm_ioctls[] = {
 	DRM_IOCTL_DEF_DRV(V3D_GET_BO_OFFSET, v3d_get_bo_offset_ioctl, DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(V3D_SUBMIT_TFU, v3d_submit_tfu_ioctl, DRM_RENDER_ALLOW | DRM_AUTH),
 	DRM_IOCTL_DEF_DRV(V3D_SUBMIT_CSD, v3d_submit_csd_ioctl, DRM_RENDER_ALLOW | DRM_AUTH),
+	DRM_IOCTL_DEF_DRV(V3D_PERFMON_CREATE, v3d_perfmon_create_ioctl, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(V3D_PERFMON_DESTROY, v3d_perfmon_destroy_ioctl, DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(V3D_PERFMON_GET_VALUES, v3d_perfmon_get_values_ioctl, DRM_RENDER_ALLOW),
 };
 
-static struct drm_driver v3d_drm_driver = {
+static const struct drm_driver v3d_drm_driver = {
 	.driver_features = (DRIVER_GEM |
 			    DRIVER_RENDER |
 			    DRIVER_SYNCOBJ),
@@ -201,10 +174,7 @@ static struct drm_driver v3d_drm_driver = {
 #endif
 
 	.gem_create_object = v3d_create_object,
-	.prime_handle_to_fd = drm_gem_prime_handle_to_fd,
-	.prime_fd_to_handle = drm_gem_prime_fd_to_handle,
 	.gem_prime_import_sg_table = v3d_prime_import_sg_table,
-	.gem_prime_mmap = drm_gem_prime_mmap,
 
 	.ioctls = v3d_drm_ioctls,
 	.num_ioctls = ARRAY_SIZE(v3d_drm_ioctls),
@@ -219,9 +189,10 @@ static struct drm_driver v3d_drm_driver = {
 };
 
 static const struct of_device_id v3d_of_match[] = {
+	{ .compatible = "brcm,2712-v3d" },
+	{ .compatible = "brcm,2711-v3d" },
 	{ .compatible = "brcm,7268-v3d" },
 	{ .compatible = "brcm,7278-v3d" },
-	{ .compatible = "brcm,2711-v3d" },
 	{},
 };
 MODULE_DEVICE_TABLE(of, v3d_of_match);
@@ -229,22 +200,21 @@ MODULE_DEVICE_TABLE(of, v3d_of_match);
 static int
 map_regs(struct v3d_dev *v3d, void __iomem **regs, const char *name)
 {
-	struct resource *res =
-		platform_get_resource_byname(v3d_to_pdev(v3d), IORESOURCE_MEM, name);
-
-	*regs = devm_ioremap_resource(v3d->drm.dev, res);
+	*regs = devm_platform_ioremap_resource_byname(v3d_to_pdev(v3d), name);
 	return PTR_ERR_OR_ZERO(*regs);
 }
 
 static int v3d_platform_drm_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
+	struct rpi_firmware *firmware;
+	struct device_node *node;
 	struct drm_device *drm;
 	struct v3d_dev *v3d;
 	int ret;
 	u32 mmu_debug;
 	u32 ident1;
-
+	u64 mask;
 
 	v3d = devm_drm_dev_alloc(dev, &v3d_drm_driver, struct v3d_dev, drm);
 	if (IS_ERR(v3d))
@@ -263,8 +233,11 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 		return ret;
 
 	mmu_debug = V3D_READ(V3D_MMU_DEBUG_INFO);
-	dma_set_mask_and_coherent(dev,
-		DMA_BIT_MASK(30 + V3D_GET_FIELD(mmu_debug, V3D_MMU_PA_WIDTH)));
+	mask = DMA_BIT_MASK(30 + V3D_GET_FIELD(mmu_debug, V3D_MMU_PA_WIDTH));
+	ret = dma_set_mask_and_coherent(dev, mask);
+	if (ret)
+		return ret;
+
 	v3d->va_width = 30 + V3D_GET_FIELD(mmu_debug, V3D_MMU_VA_WIDTH);
 
 	ident1 = V3D_READ(V3D_HUB_IDENT1);
@@ -295,7 +268,20 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 			dev_err(dev, "Failed to get clock (%ld)\n", PTR_ERR(v3d->clk));
 		return PTR_ERR(v3d->clk);
 	}
-	v3d->clk_up_rate = clk_get_rate(v3d->clk);
+
+	node = rpi_firmware_find_node();
+	if (!node)
+		return -EINVAL;
+
+	firmware = rpi_firmware_get(node);
+	of_node_put(node);
+	if (!firmware)
+		return -EPROBE_DEFER;
+
+	v3d->clk_up_rate = rpi_firmware_clk_get_max_rate(firmware,
+							 RPI_FIRMWARE_V3D_CLK_ID);
+	rpi_firmware_put(firmware);
+
 	/* For downclocking, drop it to the minimum frequency we can get from
 	 * the CPRMAN clock generator dividing off our parent.  The divider is
 	 * 4 bits, but ask for just higher than that so that rounding doesn't
@@ -317,7 +303,6 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-
 	ret = v3d_gem_init(drm);
 	if (ret)
 		goto dma_free;
@@ -330,7 +315,7 @@ static int v3d_platform_drm_probe(struct platform_device *pdev)
 	if (ret)
 		goto irq_disable;
 
-	ret = clk_set_rate(v3d->clk, v3d->clk_down_rate);
+	ret = clk_set_min_rate(v3d->clk, v3d->clk_down_rate);
 	WARN_ON_ONCE(ret != 0);
 
 	return 0;
@@ -344,7 +329,7 @@ dma_free:
 	return ret;
 }
 
-static int v3d_platform_drm_remove(struct platform_device *pdev)
+static void v3d_platform_drm_remove(struct platform_device *pdev)
 {
 	struct drm_device *drm = platform_get_drvdata(pdev);
 	struct v3d_dev *v3d = to_v3d_dev(drm);
@@ -355,17 +340,14 @@ static int v3d_platform_drm_remove(struct platform_device *pdev)
 
 	dma_free_wc(v3d->drm.dev, 4096, v3d->mmu_scratch,
 		    v3d->mmu_scratch_paddr);
-
-	return 0;
 }
 
 static struct platform_driver v3d_platform_driver = {
 	.probe		= v3d_platform_drm_probe,
-	.remove		= v3d_platform_drm_remove,
+	.remove_new	= v3d_platform_drm_remove,
 	.driver		= {
 		.name	= "v3d",
 		.of_match_table = v3d_of_match,
-		.pm = &v3d_pm_ops,
 	},
 };
 
