@@ -20,11 +20,10 @@ jobs:
       run: sudo apt update ; sudo apt -y install gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
     - name: clone external repos
       run: git clone https://github.com/raspberrypi/userland && git clone https://github.com/clockworkpi/uConsole.git && git clone https://github.com/cuu/skel.git 
-# && git clone https://github.com/raspberrypi/linux.git
     - name: Setup CCache
       uses: hendrikmuhs/ccache-action@v1.2
     - name: Patch kernel
-      run: cd linux && git apply ../uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch && cd ..
+      run: cd linux && patch -p1 < ../uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch && cd ..
     - name: Cross-compile kernel 
       run: cd linux && make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig && make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 && make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
     - name: Create installer.bin
