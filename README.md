@@ -7,8 +7,10 @@
 - Extract the image, and write it to an SD card: `dd if=installer.bin of=/dev/mmcblk0 bs=1M status=progress`
 
 # Linux kernel source 
-The source tree is added as a sub-tree to speed up the build process (from https://github.com/raspberrypi/linux.git); and locked to `3a33f11c48572b9dd0fecac164b3990fc9234da8` but it can be
+The source tree is added as a sub-tree to speed up the build process ~(from https://github.com/raspberrypi/linux.git); and locked to 3a33f11c48572b9dd0fecac164b3990fc9234da8~ but it can be
 updated with `git subtree` (Note: patches in https://github.com/clockworkpi/uConsole.git depend on this commit, so it will likely need to be updated later.)
+
+- recently updated to: https://github.com/ak-rex/ClockworkPi-linux.git (rpi-6.6.y HEAD) (7-9-24)
 
 # Image size
 Minimum SD size is 8GB, to scale up: 
