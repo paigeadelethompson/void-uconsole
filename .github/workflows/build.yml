@@ -39,8 +39,8 @@ jobs:
     - name: Cross-compile kernel
       working-directory: linux
       run: |
-        scripts/config -e CONFIG_BTRFS_FS
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig 
+        scripts/config -e CONFIG_BTRFS_FS
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
     - name: Create installer.bin
