@@ -19,7 +19,7 @@ jobs:
     - name: Install tools
       run: sudo apt update ; sudo apt -y install gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
     - name: clone external repos
-      run: curl -L git.io/antigen > antigen.zsh && git clone git clone https://github.com/syl20bnr/spacemacs && git clone https://github.com/raspberrypi/userland && git clone https://github.com/clockworkpi/uConsole.git && git clone https://github.com/cuu/skel.git 
+      run: curl -L git.io/antigen > antigen.zsh && git clone https://github.com/syl20bnr/spacemacs && git clone https://github.com/raspberrypi/userland && git clone https://github.com/clockworkpi/uConsole.git && git clone https://github.com/cuu/skel.git 
     - name: Setup CCache
       uses: hendrikmuhs/ccache-action@v1.2
     - name: Cross-compile kernel 
