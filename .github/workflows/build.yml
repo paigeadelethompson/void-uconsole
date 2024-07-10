@@ -41,6 +41,12 @@ jobs:
       run: |
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig 
         scripts/config -e CONFIG_BTRFS_FS
+        scripts/config -e CONFIG_BTRFS_FS_POSIX_ACL
+        scripts/config -d CONFIG_HZ_100
+        scripts/config -d CONFIG_HZ_250
+        scripts/config -d CONFIG_HZ_300
+        scripts/config -e CONFIG_HZ_1000
+        scripts/config -e CONFIG_NO_HZ_FULL
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
     - name: Create installer.bin
