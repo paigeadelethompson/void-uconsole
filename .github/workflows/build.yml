@@ -17,17 +17,41 @@ jobs:
       id: date
       run: echo "stamp=$(date '+%s')" >> $GITHUB_ENV
     - name: Install tools
-      run: sudo apt update ; sudo apt -y install gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
+      run: |
+        sudo apt update 
+        sudo apt -y install ccache gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
     - name: clone external repos
-      run: git clone https://github.com/raspberrypi/userland && git clone https://github.com/clockworkpi/uConsole.git && git clone https://github.com/cuu/skel.git 
+      run: |
+        curl -L git.io/antigen > antigen.zsh 
+        git clone https://github.com/syl20bnr/spacemacs 
+        git clone https://github.com/raspberrypi/userland 
+        git clone https://github.com/clockworkpi/uConsole.git 
+        git clone https://github.com/cuu/skel.git 
+    - name: delete git directories 
+      run: |
+        rm -rf antigen/.git 
+        rm -rf spacemacs/.git 
+        rm -rf userland/.git 
+        rm -rf uConsole/.git 
+        rm -rf skel/.git 
     - name: Setup CCache
       uses: hendrikmuhs/ccache-action@v1.2
-#    - name: Patch kernel
-#      run: cd linux && patch -p1 < ../uConsole/Code/patch/cm4/20230630/0001-patch-cm4.patch && cd ..
-    - name: Cross-compile kernel 
-      run: cd linux && make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig && make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 && make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
+    - name: Cross-compile kernel
+      working-directory: linux
+      run: |
+        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig 
+        scripts/config -e CONFIG_BTRFS_FS
+        scripts/config -e CONFIG_BTRFS_FS_POSIX_ACL
+        scripts/config -d CONFIG_HZ_100
+        scripts/config -d CONFIG_HZ_250
+        scripts/config -d CONFIG_HZ_300
+        scripts/config -e CONFIG_HZ_1000
+        scripts/config -e CONFIG_NO_HZ_FULL
+        scripts/config -e CONFIG_CRASH_DUMP
+        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 
+        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
     - name: Create installer.bin
-      run: truncate -s 7946M installer.bin
+      run: truncate -s 7800M installer.bin
     - name: Create loopback device
       run: sudo mknod -m 0660 /dev/loop254 b 7 254
     - name: Mount installer.bin as loopback device
@@ -37,15 +61,15 @@ jobs:
     - name: Create BOOT partition
       run: sudo parted /dev/loop254 mkpart primary fat32 1 1024
     - name: Create SYSTEM partition
-      run: sudo parted /dev/loop254 mkpart primary ext2 1024 7946
+      run: sudo parted /dev/loop254 mkpart primary ext2 1024 7800
     - name: Toogle boot flag on boot partition
       run: sudo parted /dev/loop254 set 1 boot on
     - name: Create BOOT filesystem
       run: sudo mkfs.vfat -F32 /dev/loop254p1
     - name: Create SYSTEM filesystem
-      run: sudo mkfs.ext4 /dev/loop254p2
+      run: sudo mkfs.btrfs /dev/loop254p2
     - name: Mount SYSTEM filesystem
-      run: sudo mount /dev/loop254p2 /mnt/
+      run: sudo mount -t btrfs -o compress=zstd /dev/loop254p2 /mnt/
     - name: Mount BOOT filesystem
       run: sudo mkdir -p /mnt/boot && sudo mount /dev/loop254p1 /mnt/boot
     - name: Docker import Void ROOTFS tarball
@@ -62,9 +86,11 @@ jobs:
       run: docker create --name rpi-image void:latest
     - name: Docker export
       run: cd /mnt ; sudo docker export rpi-image | sudo tar --exclude=etc/machine-id --exclude=etc/ssh/*_key* --exclude=etc/ssh/moduli -xf -
+    - name: Free space
+      run: docker rm rpi-image ; docker rmi voidlinux/voidlinux:latest
     - name: Delete QEMU BINFMT shim
       run: sudo rm -rf /mnt/usr/bin/qemu-aarch64-static
-    - name: Home directories
+    - name: Home directory
       run: sudo mkdir -p /mnt/home/pi/.ssh
     - name: authorized_keys empty file
       run: sudo touch /mnt/home/pi/.ssh/authorized_keys
