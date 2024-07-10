@@ -20,9 +20,17 @@ ADD packages.txt /tmp/packages.txt
 
 RUN xbps-install -S -u -y xbps
 
+RUN xbps-pkgdb -m hold linux
+
 RUN cat /tmp/packages.txt | xargs -i xbps-install -y -S -R "${REPO}" {} || true
 
 RUN xbps-install -Su -y
+
+RUN xbps-remove -yO
+
+RUN xbps-remove -yo
+
+RUN vkpurge rm all
 
 ADD sshd_config /etc/ssh/sshd_config.d/sshd_config
 
@@ -52,11 +60,11 @@ ADD uConsole /home/pi/uConsole
 
 ADD spacemacs /home/pi/.emacs.d
 
-RUN groupadd spi
+RUN groupadd spi ; true
 
-RUN groupadd i2c
+RUN groupadd i2c ; true
 
-RUN groupadd gpio
+RUN groupadd gpio ; true
 
 RUN groupadd -g 5000 pi
 
@@ -91,6 +99,8 @@ ADD linux /usr/src/linux
 WORKDIR /usr/src/linux
 
 RUN make ARCH=arm64 V=1 -j2 modules_install
+
+RUN make ARCH=arm64 V=1 -j2 headers_install
 
 RUN mkdir -p /boot/overlays
 
