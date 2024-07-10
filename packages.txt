@@ -57,3 +57,4 @@ wayland
 mtr
 vlc
 pipewire
+btrfs-progs
