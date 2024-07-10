@@ -24,8 +24,6 @@ RUN cat /tmp/packages.txt | xargs -i xbps-install -y -S -R "${REPO}" {} || true
 
 RUN xbps-install -Su -y
 
-ADD startup.txt /tmp/startup.txt
-
 ADD sshd_config /etc/ssh/sshd_config.d/sshd_config
 
 ADD sudoers /etc/sudoers.d
@@ -40,6 +38,10 @@ RUN mv /etc/skel /etc/skel.old
 
 ADD skel /etc/skel
 
+ADD spacemacs /etc/skel/.emacs.d
+
+ADD antigen.zsh /usr/share/antigen.zsh
+
 RUN mkdir -p /home/pi
 
 RUN mkdir -p /home/pi/.ssh
@@ -47,6 +49,8 @@ RUN mkdir -p /home/pi/.ssh
 RUN rm -rf /home/pi/.git
 
 ADD uConsole /home/pi/uConsole
+
+ADD spacemacs /home/pi/.emacs.d
 
 RUN groupadd spi
 
@@ -99,6 +103,8 @@ RUN sudo cp arch/arm64/boot/dts/overlays/*.dtb* /boot/overlays/
 RUN sudo cp arch/arm64/boot/dts/overlays/README /boot/overlays/
 
 RUN usermod -U pi
+
+RUN usermod -L root
 
 RUN passwd -d pi
 
