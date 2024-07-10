@@ -84,3 +84,8 @@ gnuradio-osmosdr
 airspy
 neofetch
 wireshark
+ruby
+nodejs
+gnuradio-osmosdr
+jq
+parallel
