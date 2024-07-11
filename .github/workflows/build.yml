@@ -19,7 +19,7 @@ jobs:
     - name: Install tools
       run: |
         sudo apt update 
-        sudo apt -y install ccache gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
+        sudo apt -y install p7zip-full ccache gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
     - name: clone external repos
       run: |
         curl -L git.io/antigen > antigen.zsh 
@@ -107,7 +107,7 @@ jobs:
     - name: Move into directory
       run:  mkdir void_uconsole_os && mv installer.* void_uconsole_os/
     - name: Archive directory
-      run: sudo zip -r void_uconsole_os-${{ env.stamp }}.zip void_uconsole_os/
+      run: sudo 7z -mx=9 a void_uconsole_os-${{ env.stamp }}.zip void_uconsole_os/
     - name: Create GH release
       uses: actions/create-release@v1
       id: create_release
