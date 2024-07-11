@@ -107,7 +107,7 @@ jobs:
     - name: Move into directory
       run:  mkdir void_uconsole_os && mv installer.* void_uconsole_os/
     - name: Archive directory
-      run: sudo 7z -mx=9 a void_uconsole_os-${{ env.stamp }}.zip void_uconsole_os/
+      run: sudo 7z -mx=9 a void_uconsole_os-${{ env.stamp }}.7z void_uconsole_os/
     - name: Create GH release
       uses: actions/create-release@v1
       id: create_release
@@ -124,6 +124,6 @@ jobs:
         GITHUB_TOKEN: ${{ github.token }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: void_uconsole_os-${{ env.stamp }}.zip
-        asset_name: void_uconsole_os-${{ env.stamp }}.zip
-        asset_content_type: application/zip
+        asset_path: void_uconsole_os-${{ env.stamp }}.7z
+        asset_name: void_uconsole_os-${{ env.stamp }}.7z
+        asset_content_type: application/x-7z-compressed
