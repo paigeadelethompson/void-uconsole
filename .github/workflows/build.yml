@@ -1,8 +1,6 @@
 name: "Void Linux for uConsole"
-
 on:
   workflow_dispatch:
-
 jobs:
   build:
     permissions:
@@ -19,21 +17,13 @@ jobs:
     - name: Install tools
       run: |
         sudo apt update 
-        sudo apt -y install ccache gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
+        sudo apt -y install p7zip-full ccache gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
     - name: clone external repos
       run: |
-        curl -L git.io/antigen > antigen.zsh 
-        git clone https://github.com/syl20bnr/spacemacs 
         git clone https://github.com/raspberrypi/userland 
-        git clone https://github.com/clockworkpi/uConsole.git 
-        git clone https://github.com/cuu/skel.git 
     - name: delete git directories 
       run: |
-        rm -rf antigen/.git 
-        rm -rf spacemacs/.git 
-        rm -rf userland/.git 
-        rm -rf uConsole/.git 
-        rm -rf skel/.git 
+        rm -rf userland/.git
     - name: Setup CCache
       uses: hendrikmuhs/ccache-action@v1.2
     - name: Cross-compile kernel
@@ -51,7 +41,7 @@ jobs:
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
     - name: Create installer.bin
-      run: truncate -s 7800M installer.bin
+      run: truncate -s 4096M installer.bin
     - name: Create loopback device
       run: sudo mknod -m 0660 /dev/loop254 b 7 254
     - name: Mount installer.bin as loopback device
@@ -59,9 +49,9 @@ jobs:
     - name: Create GPT disk label
       run: sudo parted /dev/loop254 mklabel msdos
     - name: Create BOOT partition
-      run: sudo parted /dev/loop254 mkpart primary fat32 1 1024
+      run: sudo parted /dev/loop254 mkpart primary fat32 1 512
     - name: Create SYSTEM partition
-      run: sudo parted /dev/loop254 mkpart primary ext2 1024 7800
+      run: sudo parted /dev/loop254 mkpart primary ext2 512 4096
     - name: Toogle boot flag on boot partition
       run: sudo parted /dev/loop254 set 1 boot on
     - name: Create BOOT filesystem
@@ -69,7 +59,7 @@ jobs:
     - name: Create SYSTEM filesystem
       run: sudo mkfs.btrfs /dev/loop254p2
     - name: Mount SYSTEM filesystem
-      run: sudo mount -t btrfs -o compress=zstd /dev/loop254p2 /mnt/
+      run: sudo mount -t btrfs -o compress=zstd:15 /dev/loop254p2 /mnt/
     - name: Mount BOOT filesystem
       run: sudo mkdir -p /mnt/boot && sudo mount /dev/loop254p1 /mnt/boot
     - name: Docker import Void ROOTFS tarball
@@ -107,7 +97,7 @@ jobs:
     - name: Move into directory
       run:  mkdir void_uconsole_os && mv installer.* void_uconsole_os/
     - name: Archive directory
-      run: sudo zip -r void_uconsole_os-${{ env.stamp }}.zip void_uconsole_os/
+      run: sudo 7z -mx=9 a void_uconsole_os-${{ env.stamp }}.7z void_uconsole_os/
     - name: Create GH release
       uses: actions/create-release@v1
       id: create_release
@@ -124,6 +114,6 @@ jobs:
         GITHUB_TOKEN: ${{ github.token }}
       with:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
-        asset_path: void_uconsole_os-${{ env.stamp }}.zip
-        asset_name: void_uconsole_os-${{ env.stamp }}.zip
-        asset_content_type: application/zip
+        asset_path: void_uconsole_os-${{ env.stamp }}.7z
+        asset_name: void_uconsole_os-${{ env.stamp }}.7z
+        asset_content_type: application/x-7z-compressed

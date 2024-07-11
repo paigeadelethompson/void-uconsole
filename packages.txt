@@ -1,7 +1,7 @@
 base-system
 sudo
 screen
-zsh
+tmux
 bash
 ssh
 git
@@ -24,7 +24,6 @@ tcpdump
 bluez
 python3-pip
 nano
-emacs
 rustup
 socat
 go
@@ -39,7 +38,7 @@ openvpn
 wireguard
 Waybar
 swaylock
-weston
+xorg
 sway
 swayidle
 swayimg
@@ -88,3 +87,4 @@ wifi-firmware
 alsa-firmware
 broadcom-bt-firmware
 rtl8723bt-firmware
+socklog-void
