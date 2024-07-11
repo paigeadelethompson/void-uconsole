@@ -89,7 +89,7 @@ jobs:
       run: docker rm rpi-image ; docker rmi voidlinux/voidlinux:latest
     - name: Delete QEMU BINFMT shim
       run: sudo rm -rf /mnt/usr/bin/qemu-aarch64-static
-    - name: Home directories
+    - name: Home directory
       run: sudo mkdir -p /mnt/home/pi/.ssh
     - name: authorized_keys empty file
       run: sudo touch /mnt/home/pi/.ssh/authorized_keys
