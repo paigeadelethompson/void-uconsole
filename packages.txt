@@ -84,3 +84,7 @@ pulseaudio
 pulseaudio-utils 
 pulsemixer 
 alsa-plugins-pulseaudio
+wifi-firmware
+alsa-firmware
+broadcom-bt-firmware
+rtl8723bt-firmware
