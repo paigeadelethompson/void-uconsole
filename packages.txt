@@ -30,7 +30,6 @@ socat
 go
 docker
 libvirt
-qemu
 avahi
 nftables
 runit-nftables
