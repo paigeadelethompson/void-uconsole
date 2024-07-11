@@ -69,7 +69,7 @@ jobs:
     - name: Create SYSTEM filesystem
       run: sudo mkfs.btrfs /dev/loop254p2
     - name: Mount SYSTEM filesystem
-      run: sudo mount -t btrfs -o compress=zstd /dev/loop254p2 /mnt/
+      run: sudo mount -t btrfs -o compress=zstd:15 /dev/loop254p2 /mnt/
     - name: Mount BOOT filesystem
       run: sudo mkdir -p /mnt/boot && sudo mount /dev/loop254p1 /mnt/boot
     - name: Docker import Void ROOTFS tarball
