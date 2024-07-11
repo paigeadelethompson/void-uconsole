@@ -70,7 +70,7 @@ RUN groupadd -g 5000 pi
 
 RUN useradd -u 4000 -g pi -s /bin/bash -d /home/pi -G video,adm,dialout,cdrom,audio,plugdev,users,input,spi,i2c,gpio,scanner,audio,bluetooth,docker pi
 
-RUN chown pi:pi /home/pi
+RUN chown -r pi:pi /home/pi
 
 WORKDIR /usr/local/bin
 
