@@ -86,7 +86,7 @@ jobs:
     - name: Docker export
       run: cd /mnt ; sudo docker export rpi-image | sudo tar --exclude=etc/machine-id --exclude=etc/ssh/*_key* --exclude=etc/ssh/moduli -xf -
     - name: Free space
-      run: docker rm rpi-image
+      run: docker rm rpi-image ; docker rmi voidlinux/voidlinux:latest
     - name: Delete QEMU BINFMT shim
       run: sudo rm -rf /mnt/usr/bin/qemu-aarch64-static
     - name: Home directories
