@@ -60,3 +60,4 @@ ruby
 nodejs
 jq
 parallel
+rpi-firmware
