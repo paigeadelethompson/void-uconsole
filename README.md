@@ -40,7 +40,8 @@ qemu-system-aarch64                                                             
 -append "console=serial0,115200n8 console=tty0 root=/dev/mmcblk0p2 rootfstype=btrfs fsck.repair=yes rootwait" \
 -netdev user,id=net0,net=169.254.0.0/16,dhcpstart=169.254.0.2,hostfwd=tcp::2222-:22                           \
 -device usb-net,netdev=net0                                                                                   \
--device usb-kbd
+-device usb-kbd                                                                                               \
+-device usb-mouse
 ```
 
 # Additional documentation
