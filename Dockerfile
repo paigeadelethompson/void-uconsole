@@ -40,7 +40,7 @@ RUN mkdir -p /home/pi
 
 RUN mkdir -p /home/pi/.ssh
 
-ADD .profile /home/pi/.profile
+ADD profile /home/pi/.profile
 
 RUN groupadd spi ; true
 
@@ -82,7 +82,7 @@ WORKDIR /usr/src/linux
 
 RUN make ARCH=arm64 V=1 -j2 modules_install
 
-# RUN make ARCH=arm64 V=1 -j2 headers_install ???
+# RUN make ARCH=arm64 V=1 -j2 headers_install XXX
 
 RUN mkdir -p /boot/overlays
 
