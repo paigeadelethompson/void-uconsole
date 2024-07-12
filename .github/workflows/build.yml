@@ -1,8 +1,6 @@
 name: "Void Linux for uConsole"
-
 on:
   workflow_dispatch:
-
 jobs:
   build:
     permissions:
@@ -22,18 +20,10 @@ jobs:
         sudo apt -y install p7zip-full ccache gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
     - name: clone external repos
       run: |
-        curl -L git.io/antigen > antigen.zsh 
-        git clone https://github.com/syl20bnr/spacemacs 
         git clone https://github.com/raspberrypi/userland 
-        git clone https://github.com/clockworkpi/uConsole.git 
-        git clone https://github.com/cuu/skel.git 
     - name: delete git directories 
       run: |
-        rm -rf antigen/.git 
-        rm -rf spacemacs/.git 
-        rm -rf userland/.git 
-        rm -rf uConsole/.git 
-        rm -rf skel/.git 
+        rm -rf userland/.git
     - name: Setup CCache
       uses: hendrikmuhs/ccache-action@v1.2
     - name: Cross-compile kernel
