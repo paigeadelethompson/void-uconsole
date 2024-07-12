@@ -88,3 +88,5 @@ alsa-firmware
 broadcom-bt-firmware
 rtl8723bt-firmware
 socklog-void
+twm
+xterm
