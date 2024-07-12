@@ -13,7 +13,7 @@ updated with `git subtree` (Note: patches in https://github.com/clockworkpi/uCon
 - recently updated to: https://github.com/ak-rex/ClockworkPi-linux.git (rpi-6.6.y HEAD) (7-9-24)
 
 # Image size
-Minimum SD size is 8GB, to scale up: 
+Minimum SD size is 4GB, to scale up: 
 ```
 qemu-img resize installer.bin 16G
 losetup -P /dev/loop127 installer.bin
