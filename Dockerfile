@@ -40,25 +40,9 @@ ADD fstab /etc/fstab
 
 ADD issue.net /etc/issue.net
 
-ADD skel /home/pi
-
-RUN mv /etc/skel /etc/skel.old
-
-ADD skel /etc/skel
-
-ADD spacemacs /etc/skel/.emacs.d
-
-ADD antigen.zsh /usr/share/antigen.zsh
-
 RUN mkdir -p /home/pi
 
 RUN mkdir -p /home/pi/.ssh
-
-RUN rm -rf /home/pi/.git
-
-ADD uConsole /home/pi/uConsole
-
-ADD spacemacs /home/pi/.emacs.d
 
 RUN groupadd spi ; true
 
@@ -99,8 +83,6 @@ ADD linux /usr/src/linux
 WORKDIR /usr/src/linux
 
 RUN make ARCH=arm64 V=1 -j2 modules_install
-
-# RUN make ARCH=arm64 V=1 -j2 headers_check ???
 
 # RUN make ARCH=arm64 V=1 -j2 headers_install ???
 
