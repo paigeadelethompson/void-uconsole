@@ -40,6 +40,8 @@ RUN mkdir -p /home/pi
 
 RUN mkdir -p /home/pi/.ssh
 
+ADD .profile /home/pi/.profile
+
 RUN groupadd spi ; true
 
 RUN groupadd i2c ; true
