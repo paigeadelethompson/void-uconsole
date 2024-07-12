@@ -38,6 +38,8 @@ jobs:
         scripts/config -e CONFIG_HZ_1000
         scripts/config -e CONFIG_NO_HZ_FULL
         scripts/config -e CONFIG_CRASH_DUMP
+        scripts/config -e CONFIG_SECURITY_YAMA
+        scripts/config -e CONFIG_USERFAULTFD
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
     - name: Create installer.bin
