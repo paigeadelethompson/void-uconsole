@@ -21,7 +21,7 @@ parted /dev/loop127
 ```
 delete the second partition, and recreate it; then run: 
 ```
-resize2fs /dev/loop127p2
+btrfs filesystem resize +12G /dev/loop127p2
 losetup -d /dev/loop127
 dd if=installer.bin of=/dev/mmcblk0 bs=1M status=progress
 ```
