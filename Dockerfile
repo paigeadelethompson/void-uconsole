@@ -32,13 +32,9 @@ RUN xbps-remove -yo
 
 RUN vkpurge rm all
 
-ADD sshd_config /etc/ssh/sshd_config.d/sshd_config
-
 ADD sudoers /etc/sudoers.d
 
 ADD fstab /etc/fstab
-
-ADD issue.net /etc/issue.net
 
 RUN mkdir -p /home/pi
 
