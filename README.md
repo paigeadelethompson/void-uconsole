@@ -25,7 +25,24 @@ btrfs filesystem resize +12G /dev/loop127p2
 losetup -d /dev/loop127
 dd if=installer.bin of=/dev/mmcblk0 bs=1M status=progress
 ```
-  
+
+# QEmu testing 
+My current version of QEmu only has a raspi3b machine type, but the 4b is apparently supported in newer versions. 
+For more info: https://www.qemu.org/docs/master/system/arm/raspi.html
+
+use `losetup` and mount the first partition to retrieve the kernel and dtbs, then:
+```
+qemu-system-aarch64                                                                                           \
+-M raspi3b                                                                                                    \
+-kernel kernel8.img                                                                                           \
+-dtb bcm2710-rpi-3-b.dtb                                                                                      \
+-drive format=raw,file=installer.bin                                                                          \
+-append "console=serial0,115200n8 console=tty0 root=/dev/mmcblk0p2 rootfstype=btrfs fsck.repair=yes rootwait" \
+-netdev user,id=net0,net=169.254.0.0/16,dhcpstart=169.254.0.2,hostfwd=tcp::2222-:22                           \
+-device usb-net,netdev=net0                                                                                   \
+-device usb-kbd
+```
+
 # Additional documentation
 - https://github.com/raspberrypi/userland
 - https://github.com/clockworkpi/uConsole.git
