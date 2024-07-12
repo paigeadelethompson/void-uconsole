@@ -38,7 +38,7 @@ openvpn
 wireguard
 Waybar
 swaylock
-weston
+xorg
 sway
 swayidle
 swayimg
