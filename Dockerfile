@@ -94,6 +94,12 @@ RUN sudo cp arch/arm64/boot/dts/overlays/*.dtb* /boot/overlays/
 
 RUN sudo cp arch/arm64/boot/dts/overlays/README /boot/overlays/
 
+RUN ln -sfv /etc/sv/socklog-unix /var/service ; true
+
+RUN ln -sfv /etc/sv/nanoklogd /var/service ; true
+
+RUN ln -sfv /etc/sv/wpa_supplicant /var/service ; true
+
 RUN usermod -U pi
 
 RUN usermod -L root
