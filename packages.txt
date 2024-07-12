@@ -1,7 +1,7 @@
 base-system
 sudo
 screen
-zsh
+tmux
 bash
 ssh
 git
@@ -24,7 +24,6 @@ tcpdump
 bluez
 python3-pip
 nano
-emacs
 rustup
 socat
 go
