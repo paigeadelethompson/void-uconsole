@@ -28,7 +28,6 @@ rustup
 socat
 go
 docker
-libvirt
 avahi
 nftables
 runit-nftables
