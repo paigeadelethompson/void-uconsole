@@ -82,6 +82,8 @@ WORKDIR /usr/src/linux/headers_root
 
 RUN cp -rvp . / ; true
 
+WORKDIR /usr/src/linux
+
 RUN mkdir -p /boot/overlays
 
 RUN sudo cp arch/arm64/boot/Image.gz /boot/kernel8.img
