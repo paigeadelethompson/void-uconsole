@@ -66,10 +66,6 @@ RUN chmod +x /usr/local/bin/rpi-update
 
 RUN echo y | /usr/local/bin/rpi-update
 
-ADD cmdline.txt /boot/cmdline.txt
-
-ADD config.txt /boot/config.txt
-
 ADD userland /usr/src/userland
 
 WORKDIR /usr/src/userland
