@@ -49,6 +49,17 @@ i3lock-color
 i3status
 i3wsr
 dmenu
+compton
+hsetroot
+rxvt-unicode
+xsel
+rofi
+xsettingsd
+lxappearance
+scrot
+viewnior
+dunst
+kitty
 fontconfig
 mtr
 vlc
