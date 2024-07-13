@@ -48,6 +48,8 @@ i3lock
 i3lock-color
 i3status
 i3wsr
+dmenu
+fontconfig
 mtr
 vlc
 btrfs-progs
@@ -78,3 +80,6 @@ alsa-firmware
 broadcom-bt-firmware
 rtl8723bt-firmware
 socklog-void
+aria2
+powertop
+firefox

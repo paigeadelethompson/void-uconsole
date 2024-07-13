@@ -32,15 +32,9 @@ RUN xbps-remove -yo
 
 RUN vkpurge rm all
 
-ADD sudoers /etc/sudoers.d
-
-ADD fstab /etc/fstab
-
 RUN mkdir -p /home/pi
 
 RUN mkdir -p /home/pi/.ssh
-
-ADD profile /home/pi/.profile
 
 RUN groupadd spi ; true
 
@@ -52,11 +46,19 @@ RUN groupadd -g 5000 pi
 
 RUN useradd -u 4000 -g pi -s /bin/bash -d /home/pi -G video,adm,dialout,cdrom,audio,plugdev,users,input,spi,i2c,gpio,scanner,audio,bluetooth,docker pi
 
+ADD config /tmp/config
+
+WORKDIR /tmp/config
+
+RUN cp -rvp . /
+
+ADD emacs /home/pi/.emacs.d
+
 RUN chown -R pi:pi /home/pi
 
 WORKDIR /usr/local/bin
 
-RUN wget https://raw.githubusercontent.com/raspberrypi/rpi-update/master/rpi-update
+RUN add rpi-update /usr/local/bin/rpi-update
 
 RUN mkdir -p /lib/modules
 
@@ -68,13 +70,11 @@ ADD cmdline.txt /boot/cmdline.txt
 
 ADD config.txt /boot/config.txt
 
-RUN cd /tmp
-
 ADD userland /usr/src/userland
 
 WORKDIR /usr/src/userland
 
-RUN  ./buildme --aarch64
+RUN ./buildme --aarch64
 
 ADD linux /usr/src/linux
 
@@ -106,8 +106,24 @@ RUN usermod -L root
 
 RUN passwd -d pi
 
-ADD 99-uconsole.rules /etc/udev/rules.d/99-uconsole.rules
+RUN rm -rf /usr/src/linux
+
+WORKDIR /home/pi
+
+ADD pip.txt /tmp/pip.txt
+
+RUN chmod 777 /tmp/pip.txt
+
+USER pi
+
+ENV HOME /home/pi
+
+RUN cat /tmp/pip.txt | xargs -i pip install --user {} ; true
+
+RUN fontconfig -y ; true
+
+RUN zsh -c 'true' ; true
+
+USER root
 
 WORKDIR /
-
-RUN rm -rf /usr/src/linux

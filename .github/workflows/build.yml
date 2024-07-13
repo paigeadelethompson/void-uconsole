@@ -16,20 +16,23 @@ jobs:
       run: echo "stamp=$(date '+%s')" >> $GITHUB_ENV
     - name: Install tools
       run: |
-        sudo apt update 
+        sudo apt update
         sudo apt -y install p7zip-full ccache gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
     - name: clone external repos
       run: |
-        git clone https://github.com/raspberrypi/userland 
-    - name: delete git directories 
+        https://raw.githubusercontent.com/raspberrypi/rpi-update/master/rpi-update
+        git clone https://github.com/raspberrypi/userland
+        git clone https://github.com/syl20bnr/spacemacs emacs
+    - name: delete git directories
       run: |
         rm -rf userland/.git
+        rm -rf emacs/.git
     - name: Setup CCache
       uses: hendrikmuhs/ccache-action@v1.2
     - name: Cross-compile kernel
       working-directory: linux
       run: |
-        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig 
+        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig
         scripts/config -e CONFIG_BTRFS_FS
         scripts/config -e CONFIG_BTRFS_FS_POSIX_ACL
         scripts/config -d CONFIG_HZ_100
@@ -40,7 +43,7 @@ jobs:
         scripts/config -e CONFIG_CRASH_DUMP
         scripts/config -e CONFIG_SECURITY_YAMA
         scripts/config -e CONFIG_USERFAULTFD
-        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 
+        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
     - name: Create installer.bin
       run: truncate -s 4096M installer.bin

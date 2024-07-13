@@ -1,0 +1,6 @@
+ipython
+scapy
+pylint
+docker-compose
+commandnotfound
+flake8
