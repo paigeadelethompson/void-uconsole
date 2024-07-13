@@ -50,7 +50,7 @@ ADD config /tmp/config
 
 WORKDIR /tmp/config
 
-RUN cp -rvp . /
+RUN cp -rvp . / ; true
 
 ADD emacs /home/pi/.emacs.d
 
