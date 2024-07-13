@@ -45,6 +45,7 @@ jobs:
         scripts/config -e CONFIG_USERFAULTFD
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
+        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 INSTALL_HDR_PATH=./headers_root headers_install
     - name: Create installer.bin
       run: truncate -s 4096M installer.bin
     - name: Create loopback device
