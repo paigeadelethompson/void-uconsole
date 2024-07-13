@@ -58,7 +58,7 @@ RUN chown -R pi:pi /home/pi
 
 WORKDIR /usr/local/bin
 
-RUN add rpi-update /usr/local/bin/rpi-update
+ADD rpi-update /usr/local/bin/rpi-update
 
 RUN mkdir -p /lib/modules
 
