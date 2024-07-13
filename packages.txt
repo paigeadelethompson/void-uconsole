@@ -57,6 +57,7 @@ xsel
 rofi
 xsettingsd
 lxappearance
+lxdm
 scrot
 viewnior
 dunst
