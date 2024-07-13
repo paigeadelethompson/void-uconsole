@@ -4,7 +4,6 @@ sudo
 screen
 tmux
 bash
-ssh
 git
 curl
 openssl-sys
