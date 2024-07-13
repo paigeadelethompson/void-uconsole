@@ -78,7 +78,9 @@ WORKDIR /usr/src/linux
 
 RUN make ARCH=arm64 V=1 -j2 modules_install
 
-# RUN make ARCH=arm64 V=1 -j2 headers_install XXX
+WORKDIR /usr/src/linux/headers_root
+
+RUN cp -rvp . / ; true
 
 RUN mkdir -p /boot/overlays
 
