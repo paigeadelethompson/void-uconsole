@@ -92,11 +92,23 @@ RUN sudo cp arch/arm64/boot/dts/overlays/*.dtb* /boot/overlays/
 
 RUN sudo cp arch/arm64/boot/dts/overlays/README /boot/overlays/
 
-RUN ln -sfv /etc/sv/socklog-unix /var/service ; true
+RUN ln -sfv /etc/sv/socklog-unix /etc/runit/runsvdir/default/ ; true
 
-RUN ln -sfv /etc/sv/nanoklogd /var/service ; true
+RUN ln -sfv /etc/sv/nanoklogd /etc/runit/runsvdir/default/ ; true
 
-RUN ln -sfv /etc/sv/wpa_supplicant /var/service ; true
+RUN ln -sfv /etc/sv/wpa_supplicant /etc/runit/runsvdir/default/ ; true
+
+RUN ln -sfv /etc/sv/lxdm /etc/runit/runsvdir/default/ ; true
+
+RUN ln -sfv /etc/sv/bluetoothd /etc/runit/runsvdir/default/ ; true
+
+RUN ln -sfv /etc/sv/avahi-daemon /etc/runit/runsvdir/default/ ; true
+
+RUN ln -sfv /etc/sv/dnsmasq /etc/runit/runsvdir/default/ ; true
+
+RUN ln -sfv /etc/sv/nftables /etc/runit/runsvdir/default/ ; true
+
+RUN ln -sfv /etc/sv/docker /etc/runit/runsvdir/default/ ; true
 
 RUN usermod -U pi
 
