@@ -134,8 +134,10 @@ RUN cat /tmp/pip.txt | xargs -i pip install --user {} ; true
 
 RUN fc-cache ; true
 
-RUN zsh -c 'true' ; true
+RUN zsh -c '/home/pi/.zshrc' ; true
 
 USER root
+
+RUN chsh -s /usr/bin/zsh pi ; true
 
 WORKDIR /
