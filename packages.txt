@@ -71,11 +71,6 @@ ncftp
 dhclient
 wpa_supplicant
 htop
-kodi
-kodi-addon-peripheral-joystick
-kodi-addon-pvr-iptvsimple
-kodi-addon-game-libretro
-retroarch
 neofetch
 ruby
 nodejs
