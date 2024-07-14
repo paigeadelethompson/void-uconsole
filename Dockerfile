@@ -80,7 +80,7 @@ RUN make ARCH=arm64 V=1 -j2 modules_install
 
 WORKDIR /usr/src/linux/headers_root
 
-RUN cp -rvp . / ; true
+RUN cp -rvp . /usr ; true
 
 WORKDIR /usr/src/linux
 
@@ -132,7 +132,7 @@ ENV HOME /home/pi
 
 RUN cat /tmp/pip.txt | xargs -i pip install --user {} ; true
 
-RUN fontconfig -y ; true
+RUN fc-cache ; true
 
 RUN zsh -c 'true' ; true
 
