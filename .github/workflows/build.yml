@@ -82,8 +82,6 @@ jobs:
       run: docker create --name rpi-image void:latest
     - name: Docker export
       run: cd /mnt ; sudo docker export rpi-image | sudo tar --exclude=etc/machine-id --exclude=etc/ssh/*_key* --exclude=etc/ssh/moduli -xf -
-    - name: Free space
-      run: docker rm rpi-image ; docker rmi voidlinux/voidlinux:latest
     - name: Delete QEMU BINFMT shim
       run: sudo rm -rf /mnt/usr/bin/qemu-aarch64-static
     - name: Copy hosts file
@@ -94,6 +92,8 @@ jobs:
       run: sudo sync && sudo sync && sudo umount /mnt/boot && sudo umount /mnt
     - name: Disconnect installer.bin
       run: sudo losetup -D /dev/loop254
+    - name: Free space
+      run: docker rm rpi-image ; docker rmi voidlinux/voidlinux:latest; rm -rf config/ ; rm -rf linux ; rm -rf .git ; true
     - name: Move into directory
       run:  mkdir void_uconsole_os && mv installer.* void_uconsole_os/
     - name: Archive directory
