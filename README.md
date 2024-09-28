@@ -10,6 +10,7 @@
 The source tree is added as a sub-tree to speed up the build process ~(from https://github.com/raspberrypi/linux.git); and locked to 3a33f11c48572b9dd0fecac164b3990fc9234da8~ but it can be
 updated with `git subtree` (Note: patches in https://github.com/clockworkpi/uConsole.git depend on this commit, so it will likely need to be updated later.)
 
+- updated again Sat 28th September 2024 in commit: `c36050235066eb04c98f429384739faa2632ac15`
 - recently updated to: https://github.com/ak-rex/ClockworkPi-linux.git (rpi-6.6.y HEAD) (7-9-24)
 
 # Image size
