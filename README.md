@@ -5,7 +5,7 @@
 # Installation 
 - Download the zipped image file from the releases page
 - Extract the image, and write it to an SD card: `dd if=installer.bin of=/dev/mmcblk0 bs=1M status=progress`
-
+- default username is `pi` no password is set, pi has `sudo`.
 # Linux kernel source 
 The source tree is added as a sub-tree to speed up the build process ~(from https://github.com/raspberrypi/linux.git); and locked to 3a33f11c48572b9dd0fecac164b3990fc9234da8~ but it can be
 updated with `git subtree` (Note: patches in https://github.com/clockworkpi/uConsole.git depend on this commit, so it will likely need to be updated later.)
