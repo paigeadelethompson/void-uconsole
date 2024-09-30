@@ -16,12 +16,12 @@ jobs:
       run: echo "stamp=$(date '+%s')" >> $GITHUB_ENV
     - name: Install tools
       run: |
-        sudo apt update 
+        sudo apt update
         sudo apt -y install p7zip-full ccache gcc-aarch64-linux-gnu device-tree-compiler python-is-python3 python3-pip exfatprogs parted exfat-fuse binfmt-support qemu-user-static
     - name: clone external repos
       run: |
-        git clone https://github.com/raspberrypi/userland 
-    - name: delete git directories 
+        git clone https://github.com/raspberrypi/userland
+    - name: delete git directories
       run: |
         rm -rf userland/.git
     - name: Setup CCache
@@ -29,9 +29,10 @@ jobs:
     - name: Cross-compile kernel
       working-directory: linux
       run: |
-        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig 
+        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig
         scripts/config -e CONFIG_BTRFS_FS
         scripts/config -e CONFIG_BTRFS_FS_POSIX_ACL
+        scripts/config -e CONFIG_EXFAT_FS
         scripts/config -d CONFIG_HZ_100
         scripts/config -d CONFIG_HZ_250
         scripts/config -d CONFIG_HZ_300
@@ -40,7 +41,7 @@ jobs:
         scripts/config -e CONFIG_CRASH_DUMP
         scripts/config -e CONFIG_SECURITY_YAMA
         scripts/config -e CONFIG_USERFAULTFD
-        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 
+        make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
     - name: Create installer.bin
       run: truncate -s 4096M installer.bin
@@ -52,16 +53,20 @@ jobs:
       run: sudo parted /dev/loop254 mklabel msdos
     - name: Create BOOT partition
       run: sudo parted /dev/loop254 mkpart primary fat32 1 512
+    - name: Create SIDELOAD partition
+      run: sudo parted /dev/loop254 mkpart primary fat32 512 576
     - name: Create SYSTEM partition
-      run: sudo parted /dev/loop254 mkpart primary ext2 512 4096
+      run: sudo parted /dev/loop254 mkpart primary ext2 576 4032
     - name: Toogle boot flag on boot partition
       run: sudo parted /dev/loop254 set 1 boot on
     - name: Create BOOT filesystem
       run: sudo mkfs.vfat -F32 /dev/loop254p1
+    - name: Create SIDELOAD filesystem
+      run: sudo mkfs.exfat /dev/loop254p2
     - name: Create SYSTEM filesystem
-      run: sudo mkfs.btrfs /dev/loop254p2
+      run: sudo mkfs.btrfs /dev/loop254p3
     - name: Mount SYSTEM filesystem
-      run: sudo mount -t btrfs -o compress=zstd:15 /dev/loop254p2 /mnt/
+      run: sudo mount -t btrfs -o compress=zstd:15 /dev/loop254p3 /mnt/
     - name: Mount BOOT filesystem
       run: sudo mkdir -p /mnt/boot && sudo mount /dev/loop254p1 /mnt/boot
     - name: Docker import Void ROOTFS tarball
@@ -92,6 +97,8 @@ jobs:
       run: sudo cp hosts /mnt/etc
     - name: Copy hostname file
       run: sudo cp hostname /mnt/etc
+    - name: Make SIDELOAD mountpoint
+      run: mkdir /mnt/mnt/sideload
     - name: Unmount
       run: sudo sync && sudo sync && sudo umount /mnt/boot && sudo umount /mnt
     - name: Disconnect installer.bin

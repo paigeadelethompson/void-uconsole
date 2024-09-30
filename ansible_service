@@ -1,0 +1,3 @@
+#!/bin/sh -e
+exec 2>&1
+exec chpst -u root file /mnt/sideload/install.yml && ansible-playbook /mnt/sideload/install.yml ; true

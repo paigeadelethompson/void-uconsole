@@ -94,11 +94,19 @@ RUN sudo cp arch/arm64/boot/dts/overlays/*.dtb* /boot/overlays/
 
 RUN sudo cp arch/arm64/boot/dts/overlays/README /boot/overlays/
 
-RUN ln -sfv /etc/sv/socklog-unix /var/service ; true
+RUN mkdir /etc/sv/ansible
 
-RUN ln -sfv /etc/sv/nanoklogd /var/service ; true
+ADD ansible_service /etc/sv/ansible/run
 
-RUN ln -sfv /etc/sv/wpa_supplicant /var/service ; true
+RUN chmod +x /etc/sv/ansible/run
+
+RUN ln -sfv /etc/sv/ansible /etc/runit/runsvdir/default/ ; true
+
+RUN ln -sfv /etc/sv/socklog-unix /etc/runit/runsvdir/default/ ; true
+ 
+RUN ln -sfv /etc/sv/nanoklogd /etc/runit/runsvdir/default/ ; true
+
+RUN ln -sfv /etc/sv/wpa_supplicant /etc/runit/runsvdir/default/ ; true
 
 RUN usermod -U pi
 

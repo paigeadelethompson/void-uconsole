@@ -1,2 +1,2 @@
-console=serial0,115200n8 console=tty1 root=/dev/mmcblk0p2 rootfstype=btrfs fsck.repair=yes rootwait
+console=serial0,115200n8 console=tty1 root=/dev/mmcblk0p3 rootfstype=btrfs fsck.repair=yes rootwait
 
