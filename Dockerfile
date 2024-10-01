@@ -50,7 +50,7 @@ RUN groupadd gpio ; true
 
 RUN groupadd -g 5000 pi
 
-RUN useradd -u 4000 -g pi -s /bin/bash -d /home/pi -G video,adm,dialout,cdrom,audio,plugdev,users,input,spi,i2c,gpio,scanner,audio,bluetooth,docker pi
+RUN useradd -u 4000 -g pi -s /bin/bash -d /home/pi -G video,adm,dialout,cdrom,audio,plugdev,users,input,spi,i2c,gpio,scanner,audio,bluetooth pi
 
 RUN chown -R pi:pi /home/pi
 
