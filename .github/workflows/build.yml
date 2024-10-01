@@ -98,7 +98,7 @@ jobs:
     - name: Copy hostname file
       run: sudo cp hostname /mnt/etc
     - name: Make SIDELOAD mountpoint
-      run: mkdir /mnt/mnt/sideload
+      run: sudo mkdir /mnt/mnt/sideload
     - name: Unmount
       run: sudo sync && sudo sync && sudo umount /mnt/boot && sudo umount /mnt
     - name: Disconnect installer.bin
