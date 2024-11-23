@@ -43,3 +43,4 @@ rtl8723bt-firmware
 socklog-void
 ca-certificates
 ntp
+cpupower
