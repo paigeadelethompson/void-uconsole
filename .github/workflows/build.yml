@@ -43,6 +43,7 @@ jobs:
         scripts/config -e CONFIG_USERFAULTFD
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
+        make kernel=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 tarxz-pkg
     - name: Create installer.bin
       run: truncate -s 4096M installer.bin
     - name: Create loopback device
@@ -126,3 +127,12 @@ jobs:
         asset_path: void_uconsole_os-${{ env.stamp }}.7z
         asset_name: void_uconsole_os-${{ env.stamp }}.7z
         asset_content_type: application/x-7z-compressed
+    - name: Upload kernel tarball
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: linux/linux-6.6.51-v8-arm64.tar.xz
+        asset_name: linux/linux-6.6.51-v8-arm64.tar.xz
+        asset_content_type: application/x-tar+xz
