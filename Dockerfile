@@ -22,6 +22,8 @@ RUN xbps-install -S -u -y xbps
 
 RUN xbps-pkgdb -m hold linux
 
+RUN xbps-pkgdb -m hold linux-headers
+
 RUN cat /tmp/packages.txt | xargs -i xbps-install -y -S -R "${REPO}" {} || true
 
 RUN xbps-install -Su -y
