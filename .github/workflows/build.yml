@@ -29,6 +29,7 @@ jobs:
     - name: Cross-compile kernel
       working-directory: linux
       run: |
+        mkdir -p ../install/usr
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 bcm2711_defconfig
         scripts/config -e CONFIG_BTRFS_FS
         scripts/config -e CONFIG_BTRFS_FS_POSIX_ACL
@@ -44,6 +45,8 @@ jobs:
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
         make kernel=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 tarxz-pkg
+        make INSTALL_HDR_PATH=../install/usr kernel=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 headers_install
+        cd ../install ; tar -cvf ../linux-headers-6.6.51-v8-arm64.tar usr/ ; cd .. ; xz -9 linux-headers-6.6.51-v8-arm64.tar  
     - name: Create installer.bin
       run: truncate -s 4096M installer.bin
     - name: Create loopback device
@@ -135,4 +138,13 @@ jobs:
         upload_url: ${{ steps.create_release.outputs.upload_url }}
         asset_path: linux/linux-6.6.51-v8-arm64.tar.xz
         asset_name: linux/linux-6.6.51-v8-arm64.tar.xz
+        asset_content_type: application/x-tar+xz
+    - name: Upload kernel headers tarball
+      uses: actions/upload-release-asset@v1
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      with:
+        upload_url: ${{ steps.create_release.outputs.upload_url }}
+        asset_path: linux-headers-6.6.51-v8-arm64.tar.xz
+        asset_name: linux-headers-6.6.51-v8-arm64.tar.xz
         asset_content_type: application/x-tar+xz
