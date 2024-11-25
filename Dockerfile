@@ -110,6 +110,8 @@ RUN ln -sfv /etc/sv/nanoklogd /etc/runit/runsvdir/default/ ; true
 
 RUN ln -sfv /etc/sv/wpa_supplicant /etc/runit/runsvdir/default/ ; true
 
+RUN ln -sfv /etc/sv/chronyd /etc/runit/runsvdir/default/ ; true
+
 RUN usermod -U pi
 
 RUN usermod -L root
