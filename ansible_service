@@ -1,3 +1,9 @@
 #!/bin/sh -e
+
 exec 2>&1
-exec chpst -u root file /mnt/sideload/install.yml && ansible-playbook /mnt/sideload/install.yml ; true
+
+if [ -f /tmp/ansible_has_already_run ]; then
+   sleep 10240
+else
+   exec ansible-playbook -vvvvvv /mnt/sideload/install.yml ; touch /tmp/ansible_has_already_run
+fi

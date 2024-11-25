@@ -5,7 +5,19 @@
 # Installation 
 - Download the zipped image file from the releases page
 - Extract the image, and write it to an SD card: `dd if=installer.bin of=/dev/mmcblk0 bs=1M status=progress`
-- default username is `pi` no password is set, pi has `sudo`.
+## Ansible sideload 
+- Mount the `sideload` partition of the SDcard and add ansible playbooks, for MacOS get the device name with `diskutil list` then:
+```
+sudo mkdir /Volumes/sideload
+sudo mount -t exfat /dev/disk4s2 /Volumes/sideload
+```
+- My playbooks can be found here: https://github.com/paigeadelethompson/paige-ansible-uconsole `git clone` this to `/Volumes/sideload` and edit the `wpa_supplicant.conf`
+file to contain the WiFi configuration that should be used for the post-boot installation. 
+- Unmount the sideload partition `sudo umount /Volumes/sideload`
+- Eject the SDCard
+- Insert the SDCard into the device and boot it (ansible will run at boot.)
+- default username is `pi` no password is set, pi has `sudo`. 
+
 # Linux kernel source 
 The source tree is added as a sub-tree to speed up the build process ~(from https://github.com/raspberrypi/linux.git); and locked to 3a33f11c48572b9dd0fecac164b3990fc9234da8~ but it can be
 updated with `git subtree` (Note: patches in https://github.com/clockworkpi/uConsole.git depend on this commit, so it will likely need to be updated later.)

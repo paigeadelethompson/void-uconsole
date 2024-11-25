@@ -84,8 +84,6 @@ WORKDIR /usr/src/linux
 
 RUN make ARCH=arm64 V=1 -j2 modules_install
 
-# RUN make ARCH=arm64 V=1 -j2 headers_install XXX
-
 RUN mkdir -p /boot/overlays
 
 RUN sudo cp arch/arm64/boot/Image.gz /boot/kernel8.img
@@ -111,6 +109,10 @@ RUN ln -sfv /etc/sv/nanoklogd /etc/runit/runsvdir/default/ ; true
 RUN ln -sfv /etc/sv/wpa_supplicant /etc/runit/runsvdir/default/ ; true
 
 RUN ln -sfv /etc/sv/chronyd /etc/runit/runsvdir/default/ ; true
+
+RUN rm -f /etc/wpa_supplicant/wpa_supplicant.conf 
+
+RUN ln -sfv /mnt/sideload/wpa_supplicant.conf /etc/wpa_supplicant/wpa_supplicant.conf ; true
 
 RUN usermod -U pi
 
