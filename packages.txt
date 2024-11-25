@@ -44,3 +44,4 @@ socklog-void
 ca-certificates
 chrony
 cpupower
+void-repo-nonfree
