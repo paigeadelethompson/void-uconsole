@@ -20,8 +20,8 @@ file to contain the WiFi configuration that should be used for the post-boot ins
 ## Resize disk without Ansible
 - This image is sized to fit on any SD that is at least 4GB or larger. Therefore the root partitition is small and should be resized to use the extent of the provided SD card:
 - `parted show`
--`parted rm 3`
--`parted mkpart primary btrfs 57M -1`
+- `parted rm 3`
+- `parted mkpart primary btrfs 57M -1`
 - `partprobe`
 - `btrfs fi resize max /`
 - reboot
