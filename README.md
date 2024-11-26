@@ -17,6 +17,14 @@ file to contain the WiFi configuration that should be used for the post-boot ins
 - Eject the SDCard
 - Insert the SDCard into the device and boot it (ansible will run at boot.)
 - default username is `pi` no password is set, pi has `sudo`. 
+## Resize disk without Ansible
+- This image is sized to fit on any SD that is at least 4GB or larger. Therefore the root partitition is small and should be resized to use the extent of the provided SD card:
+- `parted show`
+-`parted rm 3`
+-`parted mkpart primary btrfs 57M -1`
+- `partprobe`
+- `btrfs fi resize max /`
+- reboot
 
 # Linux kernel source 
 The source tree is added as a sub-tree to speed up the build process ~(from https://github.com/raspberrypi/linux.git); and locked to 3a33f11c48572b9dd0fecac164b3990fc9234da8~ but it can be
