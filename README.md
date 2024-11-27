@@ -22,7 +22,7 @@ file to contain the WiFi configuration that should be used for the post-boot ins
 - This image is sized to fit on any SD that is at least 4GB or larger. Therefore the root partitition is small and should be resized to use the extent of the provided SD card:
 - `sudo parted show`
 - `sudo parted rm 3`
-- `sudo parted mkpart primary btrfs 57M -1`
+- `sudo parted mkpart primary btrfs 576M -1`
 - `sudo partprobe`
 - `sudo btrfs fi resize max /`
 - reboot
