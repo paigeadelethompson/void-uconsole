@@ -18,12 +18,13 @@ file to contain the WiFi configuration that should be used for the post-boot ins
 - Insert the SDCard into the device and boot it (ansible will run at boot.)
 - default username is `pi` no password is set, pi has `sudo`. 
 ## Resize disk without Ansible
+- Boot into the image on the uConsole and login as user `pi`
 - This image is sized to fit on any SD that is at least 4GB or larger. Therefore the root partitition is small and should be resized to use the extent of the provided SD card:
-- `parted show`
-- `parted rm 3`
-- `parted mkpart primary btrfs 57M -1`
-- `partprobe`
-- `btrfs fi resize max /`
+- `sudo parted show`
+- `sudo parted rm 3`
+- `sudo parted mkpart primary btrfs 57M -1`
+- `sudo partprobe`
+- `sudo btrfs fi resize max /`
 - reboot
 
 # Linux kernel source 
