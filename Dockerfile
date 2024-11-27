@@ -94,12 +94,6 @@ RUN sudo cp arch/arm64/boot/dts/overlays/*.dtb* /boot/overlays/
 
 RUN sudo cp arch/arm64/boot/dts/overlays/README /boot/overlays/
 
-RUN mkdir /etc/sv/ansible
-
-ADD ansible_service /etc/sv/ansible/run
-
-RUN chmod +x /etc/sv/ansible/run
-
 RUN ln -sfv /etc/sv/socklog-unix /etc/runit/runsvdir/default/ ; true
  
 RUN ln -sfv /etc/sv/nanoklogd /etc/runit/runsvdir/default/ ; true
