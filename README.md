@@ -66,6 +66,9 @@ qemu-system-aarch64                                                             
 -device usb-mouse
 ```
 
+# Common issues 
+- `xbps-install` TLS failures; your clock is not synchronized. Chrony is part of the base image, but requires network connectivity to sync, you may need to restart chrony: `sv restart chronyd` after connecting to the network. 
+
 # Additional documentation
 - https://github.com/raspberrypi/userland
 - https://github.com/clockworkpi/uConsole.git
