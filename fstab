@@ -1,5 +1,5 @@
 /dev/mmcblk0p1 /boot/ vfat ro,noatime,nodev,noexec,nosuid 0 2
 /dev/mmcblk0p2 /mnt/sideload exfat ro,noatime,nodev,nosuid,nofail,uid=0,gid=0,dmask=007,fmask=117 0 0
-/dev/mmcblk0p3 / btrfs rw,noatime,noautodefrag 0 1
+/dev/mmcblk0p3 / btrfs rw,noatime,noautodefrag,compress=zstd:15 0 1
 tmpfs /tmp tmpfs defaults,nosuid,nodev 0 0
 proc /proc proc defaults,hidepid=2
