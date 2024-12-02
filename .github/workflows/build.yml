@@ -42,6 +42,7 @@ jobs:
         scripts/config -e CONFIG_CRASH_DUMP
         scripts/config -e CONFIG_SECURITY_YAMA
         scripts/config -e CONFIG_USERFAULTFD
+        scripts/config -e CONFIG_NFT_COMPAT
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2
         make KERNEL=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 -j2 dtbs
         make kernel=kernel8 ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- V=1 tarxz-pkg
