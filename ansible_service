@@ -1,9 +1,0 @@
-#!/bin/sh -e
-
-exec 2>&1
-
-if [ -f /tmp/ansible_has_already_run ]; then
-   sleep 10240
-else
-   exec ansible-playbook -vvvvvv /mnt/sideload/install.yml ; touch /tmp/ansible_has_already_run
-fi
